@@ -16,7 +16,12 @@
           password: form.elements.password.value,
         }),
       });
-      if (!response.ok) throw new Error("Tên đăng nhập hoặc mật khẩu không đúng.");
+      if (!response.ok) {
+        if (response.status === 429) {
+          throw new Error("Đăng nhập sai quá số lần quy định. Vui lòng đợi vài phút rồi thử lại.");
+        }
+        throw new Error("Tên đăng nhập hoặc mật khẩu không đúng.");
+      }
       window.location.replace("/ui/problems");
     } catch (error) {
       errorBox.textContent = error.message;

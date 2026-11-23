@@ -6,6 +6,7 @@ from app.api.schemas import CurrentStudentResponse, LoginRequest
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import Student
+from app.rate_limit import ACCOUNT_LOGIN_LIMITER
 from app.security import create_session_token, hash_password, verify_password
 
 
@@ -20,9 +21,22 @@ def login(payload: LoginRequest, response: Response) -> CurrentStudentResponse:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="session_auth_disabled"
         )
+    raw_login = payload.login_name.strip()
+    normalized_login = raw_login.lower()
+    retry_after = ACCOUNT_LOGIN_LIMITER.check(
+        normalized_login,
+        max_attempts=settings.auth_login_max_attempts,
+        window_seconds=settings.auth_login_window_seconds,
+    )
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="login_rate_limited",
+            headers={"Retry-After": str(retry_after)},
+        )
     with SessionLocal() as db:
         student = db.scalar(
-            select(Student).where(Student.login_name == payload.login_name.strip())
+            select(Student).where(Student.login_name == raw_login)
         )
         encoded = (
             student.password_hash
@@ -31,6 +45,10 @@ def login(payload: LoginRequest, response: Response) -> CurrentStudentResponse:
         )
         password_ok = verify_password(payload.password, encoded)
         if student is None or not student.is_active or not password_ok:
+            ACCOUNT_LOGIN_LIMITER.record_failure(
+                normalized_login,
+                window_seconds=settings.auth_login_window_seconds,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid_credentials",
@@ -70,11 +88,27 @@ def logout(
     _csrf: None = Depends(require_csrf),
 ) -> Response:
     settings = get_settings()
+    if settings.auth_mode != "session":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="session_auth_disabled"
+        )
     with SessionLocal.begin() as db:
         persisted = db.get(Student, student.id, with_for_update=True)
         if persisted is not None:
             persisted.session_version += 1
-    response.delete_cookie(settings.auth_cookie_name, path="/")
-    response.delete_cookie(settings.auth_csrf_cookie_name, path="/")
+    response.delete_cookie(
+        settings.auth_cookie_name,
+        path="/",
+        secure=settings.auth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        settings.auth_csrf_cookie_name,
+        path="/",
+        secure=settings.auth_cookie_secure,
+        httponly=False,
+        samesite="lax",
+    )
     response.status_code = status.HTTP_204_NO_CONTENT
     return response

@@ -1,12 +1,36 @@
+from functools import lru_cache
+
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
 
 
+@lru_cache(maxsize=1)
+def is_database_reachable() -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except SQLAlchemyError:
+        return False
+
+
+def require_database() -> None:
+    if not is_database_reachable():
+        pytest.skip("PostgreSQL chưa chạy trên localhost:5432 (bỏ qua DB integration test)")
+
+
+@pytest.fixture
+def database_reachable() -> bool:
+    return is_database_reachable()
+
+
 @pytest.fixture
 def db_session() -> Session:
+    require_database()
     connection = engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, expire_on_commit=False)
@@ -22,6 +46,7 @@ def db_session() -> Session:
 @pytest.fixture
 def clean_database() -> None:
     """Xóa dữ liệu trong database test dành riêng cho integration test."""
+    require_database()
     with SessionLocal.begin() as session:
         session.execute(
             text(

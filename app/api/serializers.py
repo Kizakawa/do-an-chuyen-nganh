@@ -96,12 +96,20 @@ def serialize_grading_run(db: Session, run: GradingRun) -> GradingRunResponse:
     )
 
 
-def serialize_history(db: Session, student_id: int) -> list[SubmissionHistoryItem]:
+def serialize_history(
+    db: Session,
+    student_id: int,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[SubmissionHistoryItem]:
     submissions = list(
         db.scalars(
             select(Submission)
             .where(Submission.student_id == student_id)
             .order_by(Submission.created_at.desc(), Submission.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
     )
     if not submissions:

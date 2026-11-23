@@ -65,6 +65,26 @@ def main() -> None:
             '    os.write(3, b\'{"kind":"value","value":9}\')\n'
             "    os._exit(0)\n",
         ),
+        (
+            "TC08_json_dumps_monkeypatch_attack",
+            "import json\n"
+            "_orig = json.dumps\n"
+            'json.dumps = lambda obj, **kw: _orig({"protocol": obj["protocol"], "nonce": obj["nonce"], "kind": "value", "value": 9} if isinstance(obj, dict) and "nonce" in obj else obj, **kw)\n'
+            "def sum_numbers(numbers):\n"
+            '    raise RuntimeError("Code crash hoàn toàn nhưng cố lừa Harness!")\n',
+        ),
+        (
+            "TC09_traceback_tb_frame_f_back_attack",
+            "def sum_numbers(numbers):\n"
+            "    try:\n"
+            "        1 / 0\n"
+            "    except Exception as e:\n"
+            "        loc = e.__traceback__.tb_frame.f_back.f_locals\n"
+            "        nonce = bytes(a ^ b for a, b in zip(loc['_pad_a'], loc['_pad_b'])).decode('ascii')\n"
+            "        import json\n"
+            '        payload = (json.dumps({"protocol": "python-poc-v1", "nonce": nonce, "kind": "value", "value": 9}) + "\\n").encode()\n'
+            "        loc['_real_write'](loc['_saved_stdout_fd'], payload)\n",
+        ),
     ]
 
     results = []

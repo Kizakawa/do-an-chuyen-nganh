@@ -31,8 +31,11 @@
         <span id="submission-state" class="status-pill neutral">Chưa nộp</span>
       </div>
       <label class="sr-only" for="source-code">Mã nguồn Python</label>
-      <textarea id="source-code" spellcheck="false">def {{ problem.function_signature }}:
+      <div class="code-editor-wrapper">
+        <pre id="line-numbers" class="line-numbers" aria-hidden="true">1&#10;2</pre>
+        <textarea id="source-code" spellcheck="false">def {{ problem.function_signature }}:
     pass</textarea>
+      </div>
       <div class="editor-actions">
         <button id="run-public-samples" class="button secondary" type="button">Chạy thử ví dụ (Client)</button>
         <button id="submit-code" class="button primary" type="button">Nộp bài</button>

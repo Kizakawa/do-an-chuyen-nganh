@@ -6,6 +6,7 @@
   const problemSlug = panel.dataset.problemSlug;
   const functionName = panel.dataset.functionName;
   const source = document.querySelector("#source-code");
+  const lineNumbers = document.querySelector("#line-numbers");
   const runSampleButton = document.querySelector("#run-public-samples");
   const submitButton = document.querySelector("#submit-code");
   const message = document.querySelector("#submit-message");
@@ -21,24 +22,36 @@
   const hintMessage = document.querySelector("#hint-message");
   const hintList = document.querySelector("#hint-list");
 
+  const PYODIDE_INIT_TIMEOUT_MS = 60000;
   const CLIENT_SAMPLE_TIMEOUT_MS = 5000;
 
   const ERROR_MESSAGES = {
+    authentication_required: "Vui lòng đăng nhập để tiếp tục.",
+    invalid_or_expired_session: "Phiên đăng nhập đã hết hạn hoặc không hợp lệ. Vui lòng tải lại trang để đăng nhập.",
+    csrf_validation_failed: "Phiên bảo mật CSRF không khớp. Vui lòng tải lại trang rồi thử lại.",
     cooldown_active: "Bạn vừa nhận gợi ý. Vui lòng chờ hết thời gian cooldown trước khi yêu cầu tiếp.",
     quota_exhausted: "Bạn đã sử dụng hết 3/3 lượt gợi ý cho bài tập này.",
     request_already_processing: "Hệ thống đang xử lý một yêu cầu gợi ý trước đó của bạn.",
+    request_expired: "Yêu cầu gợi ý đã quá thời gian chờ. Bạn không bị trừ lượt, vui lòng thử lại.",
+    worker_max_attempts_exceeded: "Worker xử lý gợi ý vượt quá số lần thử lại. Bạn không bị trừ lượt.",
+    llm_worker_error: "Worker AI gặp sự cố tạm thời khi tạo gợi ý. Bạn không bị trừ lượt.",
     no_public_evidence_available: "Bài làm chỉ sai ở kiểm thử ẩn nên hệ thống không trích xuất dữ kiện để tránh lộ test ẩn.",
     all_passed: "Bài làm đã đạt toàn bộ kiểm thử nên không cần gợi ý sửa lỗi.",
     grading_pending: "Lượt chấm chưa hoàn tất. Vui lòng đợi kết quả chấm trước khi yêu cầu gợi ý.",
     grading_technical_error: "Lượt chấm gặp lỗi kỹ thuật nên chưa thể tạo gợi ý.",
     llm_busy: "Hệ thống trợ giảng AI đang xử lý tối đa luồng đồng thời. Vui lòng thử lại sau vài giây (bạn không bị trừ lượt).",
+    hint_failure_rate_limited: "Bạn đã gặp lỗi tạo gợi ý nhiều lần liên tiếp. Vui lòng chờ một lát rồi thử lại (bạn không bị trừ lượt).",
+    too_many_pending_submissions: "Bạn đang có quá nhiều bài nộp chờ chấm. Vui lòng đợi kết quả chấm xong rồi nộp tiếp.",
+    login_rate_limited: "Đăng nhập sai quá số lần quy định. Vui lòng thử lại sau.",
   };
 
   let activeSubmissionId = null;
   let activeRunId = null;
   let activeRunEligibleForHint = false;
   let isRequestingHint = false;
-  let sampleWorker = null;
+  let sandboxFrame = null;
+  let sandboxLoadPromise = null;
+  let cancelActiveSampleRun = null;
   let pollTimerId = null;
   let currentQuota = {
     used_count: 0,
@@ -49,6 +62,17 @@
     has_processing_request: false,
   };
   let cooldownIntervalId = null;
+
+  function syncLineNumbers() {
+    if (!source || !lineNumbers) return;
+    const count = Math.max(1, source.value.split("\n").length);
+    const nums = [];
+    for (let i = 1; i <= count; i += 1) {
+      nums.push(i);
+    }
+    lineNumbers.textContent = nums.join("\n");
+    lineNumbers.scrollTop = source.scrollTop;
+  }
 
   function setState(text, kind = "neutral") {
     state.textContent = text;
@@ -62,9 +86,13 @@
     return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function formatHintError(code) {
-    if (!code) return "Không thể yêu cầu gợi ý.";
+  function formatApiError(code, fallback) {
+    if (!code) return fallback;
     return ERROR_MESSAGES[code] || code;
+  }
+
+  function formatHintError(code) {
+    return formatApiError(code, "Không thể yêu cầu gợi ý.");
   }
 
   function updateHintButtonState() {
@@ -160,7 +188,7 @@
   }
 
   async function pollHintRequest(requestId, attempts = 0) {
-    if (attempts >= 90) throw new Error("Yêu cầu gợi ý chờ quá lâu. Vui lòng thử lại sau.");
+    if (attempts >= 120) throw new Error("Yêu cầu gợi ý chờ quá lâu. Vui lòng thử lại sau.");
     const response = await fetch(`/api/hint-requests/${requestId}`);
     if (!response.ok) throw new Error("Không đọc được trạng thái gợi ý.");
     const payload = await response.json();
@@ -255,155 +283,160 @@
     }
   }
 
-  function createPyodideWorker() {
-    const workerSource = `
-      let pyodideReadyPromise = null;
-      function getPyodide() {
-        if (!pyodideReadyPromise) {
-          importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js");
-          pyodideReadyPromise = self.loadPyodide({
-            indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/"
-          });
+  function destroySandboxFrame() {
+    if (sandboxFrame) {
+      try {
+        if (sandboxFrame.contentWindow) {
+          sandboxFrame.contentWindow.postMessage({ type: "terminate" }, "*");
         }
-        return pyodideReadyPromise;
-      }
+      } catch (_) {}
+      sandboxFrame.remove();
+      sandboxFrame = null;
+    }
+    sandboxLoadPromise = null;
+  }
 
-      self.onmessage = async (event) => {
-        const { sourceCode, functionName, examples } = event.data;
-        try {
-          const pyodide = await getPyodide();
-          pyodide.globals.set("_USER_CODE", sourceCode);
-          pyodide.globals.set("_FUNC_NAME", functionName);
-          pyodide.globals.set("_TESTS_JSON", JSON.stringify(examples));
-          const rawJson = await pyodide.runPythonAsync(\`
-import copy, json
-
-# Đồng nhất 100% thuật toán so sánh đệ quy kiểm tra kiểu trước giá trị với app/judging/comparison.py trên Server
-def _values_equal(left, right):
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, list):
-        return len(left) == len(right) and all(
-            _values_equal(a, b) for a, b in zip(left, right)
-        )
-    if isinstance(left, dict):
-        return set(left.keys()) == set(right.keys()) and all(
-            _values_equal(left[k], right[k]) for k in left
-        )
-    return left == right
-
-_ns = {"__name__": "client_sample_runner"}
-_out = []
-try:
-    _comp = compile(_USER_CODE, "<student_submission>", "exec")
-    exec(_comp, _ns, _ns)
-    _fn = _ns.get(_FUNC_NAME)
-    if not callable(_fn):
-        raise TypeError("required_function_not_found")
-    for _t in json.loads(_TESTS_JSON):
-        try:
-            _val = _fn(*copy.deepcopy(_t["args"]))
-            json.dumps(_val, ensure_ascii=False, allow_nan=False)
-            _ok = _values_equal(_val, _t["expected"])
-            _out.append({
-                "test_index": _t["test_index"],
-                "status": "passed" if _ok else "wrong_answer",
-                "args": _t["args"],
-                "expected": _t["expected"],
-                "actual": _val,
-                "error_summary": None,
-            })
-        except Exception as _e:
-            _out.append({
-                "test_index": _t["test_index"],
-                "status": "runtime_error",
-                "args": _t["args"],
-                "expected": _t["expected"],
-                "actual": None,
-                "error_summary": f"{type(_e).__name__}: {_e}",
-            })
-except SyntaxError as _se:
-    for _t in json.loads(_TESTS_JSON):
-        _out.append({
-            "test_index": _t["test_index"],
-            "status": "syntax_error",
-            "args": _t["args"],
-            "expected": _t["expected"],
-            "actual": None,
-            "error_summary": f"SyntaxError: {_se}",
-        })
-except Exception as _re:
-    for _t in json.loads(_TESTS_JSON):
-        _out.append({
-            "test_index": _t["test_index"],
-            "status": "runtime_error",
-            "args": _t["args"],
-            "expected": _t["expected"],
-            "actual": None,
-            "error_summary": f"{type(_re).__name__}: {_re}",
-        })
-json.dumps(_out, ensure_ascii=False)
-          \`);
-          self.postMessage({ ok: true, results: JSON.parse(rawJson) });
-        } catch (err) {
-          self.postMessage({ ok: false, error: err ? err.message : "Lỗi thực thi Pyodide Worker." });
-        }
-      };
-    `;
-    const blob = new Blob([workerSource], { type: "application/javascript" });
-    const blobUrl = URL.createObjectURL(blob);
-    const worker = new Worker(blobUrl);
-    URL.revokeObjectURL(blobUrl);
-    return worker;
+  function ensureSandboxFrame() {
+    if (sandboxFrame && sandboxFrame.isConnected && sandboxLoadPromise) {
+      return sandboxLoadPromise;
+    }
+    destroySandboxFrame();
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.src = "/static/pyodide-sandbox.html";
+    frame.hidden = true;
+    frame.setAttribute("aria-hidden", "true");
+    sandboxFrame = frame;
+    sandboxLoadPromise = new Promise((resolve, reject) => {
+      frame.addEventListener("load", () => resolve(frame), { once: true });
+      frame.addEventListener(
+        "error",
+        () => reject(new Error("Không thể khởi tạo Pyodide sandbox iframe.")),
+        { once: true }
+      );
+    });
+    document.body.append(frame);
+    return sandboxLoadPromise;
   }
 
   function runSamplesInWebWorker(sourceCode, fnName, examples) {
     return new Promise((resolve, reject) => {
-      if (!sampleWorker) {
-        sampleWorker = createPyodideWorker();
-      }
-      const timeoutId = window.setTimeout(() => {
-        if (sampleWorker) {
-          sampleWorker.terminate();
-          sampleWorker = null;
-        }
-        const tleResults = examples.map((t) => ({
-          test_index: t.test_index,
-          status: "time_limit_exceeded",
-          args: t.args,
-          expected: t.expected,
-          actual: null,
-          error_summary: "Vòng lặp quá 5 giây: Web Worker đã tự động ngắt để bảo vệ trình duyệt.",
-        }));
-        resolve(tleResults);
-      }, CLIENT_SAMPLE_TIMEOUT_MS);
+      const runId = makeRequestKey();
+      let settled = false;
+      let execTimeoutId = null;
+      let initTimeoutId = null;
 
-      sampleWorker.onmessage = (event) => {
-        window.clearTimeout(timeoutId);
-        if (event.data && event.data.ok) {
-          resolve(event.data.results);
-        } else {
-          reject(new Error((event.data && event.data.error) || "Lỗi chạy thử trên Web Worker."));
+      const clearTimers = () => {
+        if (initTimeoutId) {
+          window.clearTimeout(initTimeoutId);
+          initTimeoutId = null;
+        }
+        if (execTimeoutId) {
+          window.clearTimeout(execTimeoutId);
+          execTimeoutId = null;
         }
       };
-      sampleWorker.onerror = (err) => {
-        window.clearTimeout(timeoutId);
-        sampleWorker.terminate();
-        sampleWorker = null;
-        reject(new Error(err.message || "Lỗi khởi tạo Pyodide Web Worker."));
+
+      const cleanup = () => {
+        clearTimers();
+        window.removeEventListener("message", onMessage);
+        if (cancelActiveSampleRun) {
+          cancelActiveSampleRun = null;
+        }
       };
-      sampleWorker.postMessage({
-        sourceCode,
-        functionName: fnName,
-        examples,
-      });
+
+      const onMessage = (event) => {
+        if (!sandboxFrame || event.source !== sandboxFrame.contentWindow) return;
+        const data = event.data || {};
+        if (data.runId !== runId) return;
+
+        if (data.type === "ready") {
+          if (initTimeoutId) {
+            window.clearTimeout(initTimeoutId);
+            initTimeoutId = null;
+          }
+          message.textContent = "Đang thực thi 3 test công khai trong Web Worker cô lập (giới hạn 5s)...";
+          execTimeoutId = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            destroySandboxFrame();
+            const tleResults = examples.map((t) => ({
+              test_index: t.test_index,
+              status: "time_limit_exceeded",
+              args: t.args,
+              expected: t.expected,
+              actual: null,
+              error_summary: "Vòng lặp quá 5 giây: Web Worker đã tự động ngắt để bảo vệ trình duyệt.",
+            }));
+            resolve(tleResults);
+          }, CLIENT_SAMPLE_TIMEOUT_MS);
+          return;
+        }
+
+        if (data.type === "done") {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (data.ok) {
+            resolve(data.results);
+          } else {
+            reject(new Error(data.error || "Lỗi chạy thử trên Web Worker."));
+          }
+        }
+      };
+
+      initTimeoutId = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        destroySandboxFrame();
+        reject(new Error("Quá thời gian tải thư viện Pyodide từ CDN. Hãy kiểm tra kết nối mạng."));
+      }, PYODIDE_INIT_TIMEOUT_MS);
+
+      cancelActiveSampleRun = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        destroySandboxFrame();
+        reject(new Error("Đã dừng chạy thử theo yêu cầu của bạn."));
+      };
+
+      window.addEventListener("message", onMessage);
+      ensureSandboxFrame()
+        .then((frame) => {
+          if (settled || !frame.contentWindow) return;
+          frame.contentWindow.postMessage(
+            {
+              runId,
+              type: "run",
+              sourceCode,
+              functionName: fnName,
+              examples,
+            },
+            "*"
+          );
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          destroySandboxFrame();
+          reject(err);
+        });
     });
   }
 
   if (runSampleButton && functionName) {
     runSampleButton.addEventListener("click", async () => {
-      runSampleButton.disabled = true;
-      message.textContent = "Đang chạy thử 3 test công khai trong Web Worker cô lập (giới hạn 5s)...";
+      if (cancelActiveSampleRun) {
+        cancelActiveSampleRun();
+        return;
+      }
+      runSampleButton.textContent = "Dừng chạy thử";
+      runSampleButton.classList.remove("secondary");
+      runSampleButton.classList.add("danger");
+      message.textContent = "Đang khởi tạo môi trường Pyodide Web Worker...";
       try {
         const examples = Array.from(document.querySelectorAll(".examples .example")).map((el) => ({
           test_index: Number(el.dataset.testIndex),
@@ -420,12 +453,19 @@ json.dumps(_out, ensure_ascii=False)
       } catch (err) {
         message.textContent = err.message || "Lỗi khi chạy thử trên trình duyệt.";
       } finally {
-        runSampleButton.disabled = false;
+        runSampleButton.textContent = "Chạy thử ví dụ (Client)";
+        runSampleButton.classList.remove("danger");
+        runSampleButton.classList.add("secondary");
       }
     });
   }
 
   if (source) {
+    syncLineNumbers();
+    source.addEventListener("input", syncLineNumbers);
+    source.addEventListener("scroll", () => {
+      if (lineNumbers) lineNumbers.scrollTop = source.scrollTop;
+    });
     source.addEventListener("keydown", (event) => {
       if (event.key === "Tab") {
         event.preventDefault();
@@ -433,6 +473,7 @@ json.dumps(_out, ensure_ascii=False)
         const end = source.selectionEnd;
         source.value = `${source.value.slice(0, start)}    ${source.value.slice(end)}`;
         source.selectionStart = source.selectionEnd = start + 4;
+        syncLineNumbers();
       }
     });
   }
@@ -462,7 +503,7 @@ json.dumps(_out, ensure_ascii=False)
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || "Không thể nộp bài.");
+        throw new Error(formatApiError(payload.detail, "Không thể nộp bài."));
       }
       setState("Đang chờ");
       pollResult(payload.submission_id, payload.grading_run_id);
@@ -523,7 +564,7 @@ json.dumps(_out, ensure_ascii=False)
         } else {
           if (hintMessage) {
             hintMessage.className = "hint-status-msg danger";
-            hintMessage.textContent = `Không tạo được gợi ý hợp lệ (${payload.error_code || "lỗi dịch vụ"}) — bạn không bị trừ lượt.`;
+            hintMessage.textContent = `Không tạo được gợi ý hợp lệ (${formatHintError(payload.error_code)}) — bạn không bị trừ lượt.`;
           }
         }
       } catch (error) {

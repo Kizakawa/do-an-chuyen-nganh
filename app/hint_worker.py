@@ -23,16 +23,29 @@ def _request_stop(signum: int, _frame: object) -> None:
 def run(*, once: bool, idle_seconds: float) -> None:
     service = HintOrchestrationService(SessionLocal, settings=get_settings())
     last_heartbeat = 0.0
-    while not _stop_requested:
-        monotonic_now = time.monotonic()
-        if monotonic_now - last_heartbeat >= 10:
-            record_heartbeat("hint", {"status": "running"})
-            last_heartbeat = monotonic_now
-        processed = service.process_next()
-        if once:
-            return
-        if not processed:
-            time.sleep(idle_seconds)
+    try:
+        while not _stop_requested:
+            if not once:
+                monotonic_now = time.monotonic()
+                if monotonic_now - last_heartbeat >= 10:
+                    try:
+                        record_heartbeat("hint", {"status": "running"})
+                        last_heartbeat = monotonic_now
+                    except Exception:
+                        logger.exception("hint_worker_heartbeat_failed")
+            try:
+                processed = service.process_next()
+            except Exception:
+                logger.exception("hint_worker_loop_error")
+                processed = False
+            if once:
+                return
+            if not processed and not _stop_requested:
+                time.sleep(idle_seconds)
+    finally:
+        close_fn = getattr(service.adapter, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 def main() -> None:

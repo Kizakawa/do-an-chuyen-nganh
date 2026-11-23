@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,25 @@ def create_submission(
     if not test_count:
         raise HTTPException(status_code=409, detail="problem_has_no_tests")
 
+    db.get(Student, student.id, with_for_update=True)
+    pending_runs = (
+        db.scalar(
+            select(func.count(GradingRun.id))
+            .join(Submission, Submission.id == GradingRun.submission_id)
+            .where(
+                Submission.student_id == student.id,
+                GradingRun.status.in_(["queued", "running"]),
+            )
+        )
+        or 0
+    )
+    if pending_runs >= settings.max_pending_submissions_per_student:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too_many_pending_submissions",
+            headers={"Retry-After": "5"},
+        )
+
     submission = Submission(
         student_id=student.id,
         problem_id=problem.id,
@@ -82,10 +101,18 @@ def create_submission(
 
 @router.get("", response_model=list[SubmissionHistoryItem])
 def get_history(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     student: Student = Depends(get_current_student),
 ) -> list[SubmissionHistoryItem]:
-    return serialize_history(db, student.id)
+    settings = get_settings()
+    return serialize_history(
+        db,
+        student.id,
+        limit=min(limit, settings.history_max_items),
+        offset=offset,
+    )
 
 
 @router.get("/{submission_id}/grading-runs/{run_id}", response_model=GradingRunResponse)

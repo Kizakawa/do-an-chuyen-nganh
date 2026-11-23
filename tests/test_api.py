@@ -181,3 +181,30 @@ def test_history_contains_only_current_students_submissions(clean_database: None
     history = response.json()
     assert [item["submission_id"] for item in history] == [accepted["submission_id"]]
     assert history[0]["runs"][0]["grading_run_id"] == accepted["grading_run_id"]
+
+
+def test_submit_enforces_pending_limit_and_history_pagination(
+    clean_database: None, monkeypatch
+) -> None:
+    from app.config import get_settings
+
+    problem = prepare_api()
+    monkeypatch.setenv("MAX_PENDING_SUBMISSIONS_PER_STUDENT", "2")
+    get_settings.cache_clear()
+    try:
+        submit(problem.id)
+        submit(problem.id)
+        blocked = client.post(
+            "/api/submissions",
+            json={"problem_id": problem.id, "source_code": "def sum_numbers(numbers): return 0"},
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["detail"] == "too_many_pending_submissions"
+
+        page1 = client.get("/api/submissions?limit=1&offset=0").json()
+        page2 = client.get("/api/submissions?limit=1&offset=1").json()
+        assert len(page1) == 1
+        assert len(page2) == 1
+        assert page1[0]["submission_id"] != page2[0]["submission_id"]
+    finally:
+        get_settings.cache_clear()

@@ -56,6 +56,7 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .button.primary { color: white; background: var(--accent); }
 .button.primary:hover { background: var(--accent-dark); }
 .button.secondary { color: var(--accent); background: #e3f0f3; }
+.button.danger { color: white; background: var(--danger); }
 .button:disabled { cursor: not-allowed; opacity: .6; }
 
 .two-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 1fr); gap: 24px; align-items: start; }
@@ -71,7 +72,9 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .editor-panel { position: sticky; top: 20px; }
 .editor-heading, .history-heading, .hint-header, .hint-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .editor-heading h2, .hint-header h3 { margin: 4px 0 12px; }
-textarea { width: 100%; min-height: 360px; resize: vertical; border: 1px solid #273640; border-radius: 9px; padding: 16px; color: #e8f0f2; background: #101820; font-size: .92rem; line-height: 1.55; tab-size: 4; }
+.code-editor-wrapper { display: grid; grid-template-columns: 44px 1fr; border: 1px solid #273640; border-radius: 9px; overflow: hidden; background: #101820; }
+.line-numbers { margin: 0; padding: 16px 8px 16px 0; text-align: right; color: #647886; background: #0c131a; border-right: 1px solid #1e2b34; font-size: .92rem; line-height: 1.55; user-select: none; overflow: hidden; }
+textarea { width: 100%; min-height: 360px; resize: vertical; border: 0; padding: 16px; color: #e8f0f2; background: #101820; font-size: .92rem; line-height: 1.55; tab-size: 4; outline: none; }
 .editor-actions { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 #submit-message { color: var(--danger); font-size: .9rem; }
 .status-pill { display: inline-flex; white-space: nowrap; border-radius: 999px; padding: 6px 10px; font-size: .8rem; font-weight: 800; }

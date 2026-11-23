@@ -110,6 +110,9 @@ class Judge0Client:
         self.monotonic = monotonic
         self.sleep = sleep
 
+    def close(self) -> None:
+        self.client.close()
+
     def _build_submission_payload(self, source_code: str) -> dict[str, object]:
         return {
             "source_code": base64.b64encode(source_code.encode("utf-8")).decode("ascii"),

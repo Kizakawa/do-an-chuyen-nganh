@@ -13,6 +13,8 @@
   "M3_borderline_r5_eq_1_count": null,
   "M4_usefulness_mean": null,
   "M4_usefulness_distribution": null,
+  "inter_rater_exact_agreement": null,
+  "inter_rater_cohens_kappa": null,
   "M5_latency_ms": {
     "succeeded_median_ms": 15.0,
     "succeeded_p95_ms": 15.0,

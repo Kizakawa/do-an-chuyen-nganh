@@ -49,8 +49,9 @@ def seed_problem(db: Session, data: dict) -> Problem:
 
 
 def seed_all(db: Session) -> None:
-    demo_student = insert(Student).values(login_name="demo")
-    db.execute(demo_student.on_conflict_do_nothing(index_elements=[Student.login_name]))
+    roster = [{"login_name": "demo"}, *({"login_name": f"sv{i:02d}"} for i in range(1, 51))]
+    student_stmt = insert(Student).values(roster)
+    db.execute(student_stmt.on_conflict_do_nothing(index_elements=[Student.login_name]))
     for problem_data in ALL_PROBLEMS:
         seed_problem(db, problem_data)
 
@@ -60,7 +61,7 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     with SessionLocal.begin() as db:
         seed_all(db)
-    print("Seed hoàn tất: 20 bài, 160 test và tài khoản demo.")
+    print("Seed hoàn tất: 20 bài, 160 test và danh sách 51 tài khoản sinh viên (demo + sv01..sv50).")
 
 
 if __name__ == "__main__":

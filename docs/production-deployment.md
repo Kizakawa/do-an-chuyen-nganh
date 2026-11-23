@@ -60,7 +60,7 @@ hint đồng bộ, secret ngắn hoặc lease ngắn hơn thời gian retry LLM.
 Reverse proxy phải:
 
 - redirect HTTP sang HTTPS và bật HSTS;
-- chỉ chuyển `X-Forwarded-*` từ IP proxy đã khai báo trong `TRUSTED_PROXY_IPS`;
+- chỉ chuyển `X-Forwarded-*` từ IP proxy đã khai báo trong `TRUSTED_PROXY_IPS` (nếu reverse proxy chạy trên host gọi qua cổng publish `127.0.0.1:8000` vào Docker bridge, cần đặt đúng IP gateway cầu nối Docker hoặc chạy proxy chung mạng Docker `backend` với IP tĩnh để tránh Uvicorn gom toàn bộ người dùng về một IP gateway);
 - giới hạn request body và rate-limit `/api/auth/login`, `/api/submissions`;
 - đặt timeout lớn hơn polling HTTP nhưng không giữ kết nối LLM;
 - không cache response API chứa dữ liệu sinh viên.

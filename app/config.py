@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     worker_heartbeat_max_age_seconds: int = Field(default=30, ge=5, le=300)
     max_source_code_length: int = Field(default=20_000, ge=100, le=200_000)
+    max_pending_submissions_per_student: int = Field(default=5, ge=1, le=50)
+    history_max_items: int = Field(default=100, ge=1, le=500)
     database_url: str = Field(
         default="postgresql+psycopg://python_poc:python_poc@localhost:5432/python_poc"
     )
@@ -45,6 +47,7 @@ class Settings(BaseSettings):
     judge0_memory_limit_kb: int = Field(default=256_000, gt=0)
     judge0_max_file_size_kb: int = Field(default=1_024, gt=0)
     grading_stale_run_timeout_seconds: int = Field(default=180, ge=30, le=3_600)
+    worker_concurrency: int = Field(default=4, ge=1, le=16)
 
     # Cấu hình Hạn mức & Gợi ý sư phạm KM/KH (Chương 2 - Mục 2.2, 2.4, 2.5)
     # Ràng buộc le=3 đồng bộ với CheckConstraint(used_count <= 3) của bảng help_quota.
@@ -57,6 +60,8 @@ class Settings(BaseSettings):
     hint_max_evidence: int = Field(default=2, ge=1, le=10)
     hint_max_retries: int = Field(default=2, ge=0, le=5)
     hint_allow_hidden_only: bool = False
+    hint_max_failed_attempts_per_window: int = Field(default=3, ge=1, le=20)
+    hint_failed_window_seconds: int = Field(default=300, ge=10, le=3_600)
 
     # Cấu hình Chiến lược LLM lai (Adapter Pattern: APIDemoAdapter & ColabQwenAdapter)
     llm_mode: Literal["api_demo", "colab_qwen", "fake", "disabled"] = "api_demo"
@@ -96,16 +101,43 @@ class Settings(BaseSettings):
             not self.llm_api_key or self.llm_api_key.startswith("REPLACE_WITH")
         ):
             raise ValueError("production_requires_real_llm_api_key")
-        if self.llm_mode == "colab_qwen" and not self.colab_qwen_endpoint_url:
-            raise ValueError("production_requires_colab_qwen_endpoint")
+        if self.llm_mode == "api_demo" and not self.llm_api_base_url.startswith(
+            "https://"
+        ):
+            raise ValueError("production_requires_https_llm_url")
+        if self.llm_mode == "colab_qwen" and (
+            not self.colab_qwen_endpoint_url
+            or self.colab_qwen_endpoint_url.startswith("REPLACE_WITH")
+            or not self.colab_qwen_endpoint_url.startswith("https://")
+            or (
+                self.colab_qwen_api_key
+                and self.colab_qwen_api_key.startswith("REPLACE_WITH")
+            )
+        ):
+            raise ValueError("production_requires_https_colab_qwen_endpoint")
         if self.judge0_language_id is None:
             raise ValueError("production_requires_judge0_language_id")
+        if (
+            self.judge0_auth_token is not None
+            and (
+                not self.judge0_auth_token.strip()
+                or self.judge0_auth_token.startswith("REPLACE_WITH")
+            )
+        ):
+            raise ValueError("production_judge0_auth_token_is_placeholder")
         if "ce.judge0.com" in self.judge0_base_url or "localhost" in self.judge0_base_url:
             raise ValueError("production_requires_private_judge0")
-        if self.database_url == (
-            "postgresql+psycopg://python_poc:python_poc@localhost:5432/python_poc"
+        if not self.judge0_base_url.startswith("https://"):
+            raise ValueError("production_requires_https_judge0_url")
+        if (
+            self.database_url
+            == "postgresql+psycopg://python_poc:python_poc@localhost:5432/python_poc"
+            or "URL_ENCODED_PASSWORD" in self.database_url
+            or "REPLACE_WITH" in self.database_url
         ):
             raise ValueError("production_requires_nondefault_database_url")
+        if not self.trusted_host_list or "*" in self.trusted_host_list:
+            raise ValueError("production_forbids_wildcard_trusted_hosts")
         if "testserver" in self.trusted_host_list:
             raise ValueError("production_requires_explicit_trusted_hosts")
         if self.hint_execution_mode != "worker":

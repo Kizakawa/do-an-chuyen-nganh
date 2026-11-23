@@ -14,7 +14,7 @@ def test_seed_is_idempotent(clean_database: None) -> None:
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(Problem)) == 20
         assert db.scalar(select(func.count()).select_from(TestCase)) == 160
-        assert db.scalar(select(func.count()).select_from(Student)) == 1
+        assert db.scalar(select(func.count()).select_from(Student)) == 51
         problem = db.scalar(select(Problem))
         assert problem is not None
         assert problem.source_name == "self_authored"

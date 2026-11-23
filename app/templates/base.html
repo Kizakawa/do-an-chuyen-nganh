@@ -15,7 +15,9 @@
         <a href="/ui/history">Lịch sử</a>
       </nav>
       <span class="student">Sinh viên: {{ student.login_name }}</span>
+      {% if auth_mode == "session" %}
       <button class="logout-button" id="logout" type="button">Đăng xuất</button>
+      {% endif %}
     </header>
     <main class="page-shell">
       {% block content %}{% endblock %}

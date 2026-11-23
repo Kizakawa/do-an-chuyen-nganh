@@ -1,4 +1,3 @@
-from functools import lru_cache
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,7 +14,7 @@ from app.api.schemas import (
     SubmissionHintCreate,
 )
 from app.api.serializers import serialize_hint_request, serialize_quota_status
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database import SessionLocal, get_db
 from app.hints.service import HintOrchestrationService, HintRequestRejectedError
 from app.models import Student
@@ -30,10 +29,28 @@ router = APIRouter(prefix="/api", tags=["hints"])
 MAX_CONCURRENT_LLM_REQUESTS = 15
 LLM_BULKHEAD_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_LLM_REQUESTS)
 
+_hint_service_lock = threading.Lock()
+_cached_hint_settings: Settings | None = None
+_cached_hint_service: HintOrchestrationService | None = None
 
-@lru_cache(maxsize=1)
+
 def get_hint_service() -> HintOrchestrationService:
-    return HintOrchestrationService(SessionLocal, settings=get_settings())
+    global _cached_hint_settings, _cached_hint_service
+    current_settings = get_settings()
+    with _hint_service_lock:
+        if (
+            _cached_hint_service is None
+            or _cached_hint_settings is not current_settings
+        ):
+            if _cached_hint_service is not None:
+                close_fn = getattr(_cached_hint_service.adapter, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            _cached_hint_service = HintOrchestrationService(
+                SessionLocal, settings=current_settings
+            )
+            _cached_hint_settings = current_settings
+        return _cached_hint_service
 
 
 def _rejection_response(exc: HintRequestRejectedError) -> JSONResponse:

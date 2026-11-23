@@ -32,12 +32,22 @@ INLINE_SOLUTION_REPLACEMENT_RE = re.compile(
     r"(?:đổi\s+thành|sửa\s+thành|thay\s+bằng|viết\s+là|dùng\s+lệnh|bằng\s+lệnh)\s*[:`]?\s*`?(?:return\s+|def\s+|[a-zA-Z_]\w*\s*=[^=])",
     re.IGNORECASE,
 )
+VIETNAMESE_RETURN_SOLUTION_RE = re.compile(
+    r"(?:trả\s+về|trả\s+ra|kết\s+quả\s+là)\s+(?:giá\s+trị\s+(?:của\s+)?(?:biểu\s+thức\s+)?)?`?(?:(?:sum|len|max|min|sorted|set|list|dict|tuple|abs|any|all)\s*\([^`\n)]+\)|[a-zA-Z_]\w*\s*\[\s*:\s*:\s*-?\d+\s*\]|[a-zA-Z_]\w*\s*\.\s*\w+\s*\(\s*\))`?",
+    re.IGNORECASE,
+)
+ASSIGNMENT_STMT_RE = re.compile(
+    r"\b[a-zA-Z_]\w*\s*(?:\+=|-=|\*=|//=|=(?!=))\s*[a-zA-Z0-9_(\[\-]+"
+)
 PROMPT_OVERRIDE_ECHO_RE = re.compile(
     r"(?:SYSTEM PROMPT|Bỏ qua quy tắc trên|dưới đây là lời giải hoàn chỉnh|đáp án hoàn chỉnh là)",
     re.IGNORECASE,
 )
 IDENTIFIER_TOKEN_RE = re.compile(
     r"[a-zA-Z_]\w*|\d+|==|!=|<=|>=|\+=|-=|\*=|//=|[+\-*/%<>]"
+)
+CODE_ATOM_RE = re.compile(
+    r'[a-zA-Z_]\w*|\d+|==|!=|<=|>=|\+=|-=|\*=|//=|\*\*|[+\-*/%<>:\[\]\(\)\.,]|"[^"]*"|\'[^\']*\''
 )
 # Tách các cụm mã ASCII khỏi các từ văn xuôi tiếng Việt có dấu
 VIETNAMESE_PROSE_SPLIT_RE = re.compile(r"[^\x00-\x7F]+")
@@ -59,26 +69,57 @@ class GuardrailCheckResult:
     token_overlap: float | None = None
 
 
-def compute_code_token_overlap(
-    candidate_text: str,
-    reference_code: str,
-    *,
-    function_name: str | None = None,
-) -> float:
-    """Tính tỷ lệ trùng lặp token và cấu trúc bigram liền kề giữa phản hồi LLM và lời giải chuẩn."""
+def _extract_reference_body_lines(
+    reference_code: str, *, function_name: str | None = None
+) -> list[str]:
     ref_lines = [
         line.strip()
         for line in reference_code.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    # Bỏ dòng khai báo chữ ký hàm `def func(...):` để tránh dương tính giả vì nhắc tên hàm/tham số
     body_lines = [
         line
         for line in ref_lines
         if not (function_name and line.startswith(f"def {function_name}"))
         and not line.startswith("def ")
     ]
-    target_source = "\n".join(body_lines) if body_lines else "\n".join(ref_lines)
+    return body_lines if body_lines else ref_lines
+
+
+def _extract_code_atoms(text: str) -> list[str]:
+    atoms: list[str] = []
+    for raw in CODE_ATOM_RE.findall(text):
+        if raw.startswith("'") and raw.endswith("'") and len(raw) >= 2:
+            atoms.append(f'"{raw[1:-1]}"')
+        else:
+            atoms.append(raw)
+    return atoms
+
+
+def _has_contiguous_subsequence(haystack: list[str], needle: list[str]) -> bool:
+    n = len(needle)
+    if n == 0 or len(haystack) < n:
+        return False
+    for idx in range(len(haystack) - n + 1):
+        if haystack[idx : idx + n] == needle:
+            return True
+    return False
+
+
+def compute_code_token_overlap(
+    candidate_text: str,
+    reference_code: str,
+    *,
+    function_name: str | None = None,
+) -> float:
+    """Tính tỷ lệ trùng lặp token và cấu trúc bigram liền kề giữa phản hồi LLM và lời giải chuẩn.
+    Sử dụng mẫu số làm trơn tối thiểu (Laplace/Minimum-Length Smoothing) để không chặn nhầm (False Positive)
+    trên các bài có thân hàm 1 dòng cực ngắn (như P04 `return text[::-1]` hay P19 `return len(text.split())`).
+    """
+    body_lines = _extract_reference_body_lines(
+        reference_code, function_name=function_name
+    )
+    target_source = "\n".join(body_lines)
     ref_tokens = [
         tok
         for tok in IDENTIFIER_TOKEN_RE.findall(target_source)
@@ -89,7 +130,8 @@ def compute_code_token_overlap(
 
     cand_tokens = set(IDENTIFIER_TOKEN_RE.findall(candidate_text))
     unigram_matched = sum(1 for tok in ref_tokens if tok in cand_tokens)
-    unigram_ratio = unigram_matched / len(ref_tokens)
+    unigram_denom = max(len(ref_tokens), 5)
+    unigram_ratio = unigram_matched / unigram_denom
 
     # Trích xuất các cặp bigram mã nguồn trong lời giải chuẩn
     ref_bigrams = [
@@ -110,9 +152,10 @@ def compute_code_token_overlap(
             cand_bigrams.add((seg_tokens[i], seg_tokens[i + 1]))
 
     bigram_matched = sum(1 for bg in ref_bigrams if bg in cand_bigrams)
-    bigram_ratio = bigram_matched / len(ref_bigrams)
+    bigram_denom = max(len(ref_bigrams), 4)
+    bigram_ratio = bigram_matched / bigram_denom
 
-    # Kết hợp tỷ lệ từ đơn (40%) và tỷ lệ cụm biểu thức liền kề (60%) để chống dương tính giả trên bài ngắn
+    # Kết hợp tỷ lệ từ đơn (40%) và tỷ lệ cụm biểu thức liền kề (60%)
     combined_ratio = 0.4 * unigram_ratio + 0.6 * bigram_ratio
     return round(combined_ratio, 4)
 
@@ -124,7 +167,7 @@ def check_output_guardrail(
     function_name: str | None = None,
     token_overlap_threshold: float = 0.75,
 ) -> GuardrailCheckResult:
-    """Kiểm duyệt đầu ra LLM bằng Regex, biểu thức lệnh trả về và Token/Bigram Overlap (Vận hành + Benchmark)."""
+    """Kiểm duyệt đầu ra LLM bằng Regex, biểu thức lệnh trả về, đọc chép thuật toán và Token/Bigram Overlap."""
     if raw_text is None or not raw_text.strip():
         return GuardrailCheckResult(is_leaked=True, reasons=["empty_response"])
 
@@ -152,8 +195,13 @@ def check_output_guardrail(
     ):
         reasons.append("multiline_python_control_block")
 
-    if INLINE_SOLUTION_REPLACEMENT_RE.search(cleaned):
+    if INLINE_SOLUTION_REPLACEMENT_RE.search(
+        cleaned
+    ) or VIETNAMESE_RETURN_SOLUTION_RE.search(cleaned):
         reasons.append("inline_direct_replacement")
+
+    if len(ASSIGNMENT_STMT_RE.findall(cleaned)) >= 2:
+        reasons.append("prose_algorithm_dictation")
 
     if PROMPT_OVERRIDE_ECHO_RE.search(cleaned):
         reasons.append("prompt_injection_echo")
@@ -169,6 +217,17 @@ def check_output_guardrail(
 
     token_overlap: float | None = None
     if reference_code:
+        body_lines = _extract_reference_body_lines(
+            reference_code, function_name=function_name
+        )
+        if len(body_lines) == 1 and body_lines[0].startswith("return "):
+            ref_expr = body_lines[0][len("return ") :].strip()
+            ref_atoms = _extract_code_atoms(ref_expr)
+            if len(ref_atoms) >= 3:
+                cand_atoms = _extract_code_atoms(cleaned)
+                if _has_contiguous_subsequence(cand_atoms, ref_atoms):
+                    reasons.append("reference_expression_leaked")
+
         token_overlap = compute_code_token_overlap(
             cleaned,
             reference_code,

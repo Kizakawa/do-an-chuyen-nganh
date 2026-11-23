@@ -416,6 +416,46 @@ class HintOrchestrationService:
                         remaining_count=remaining_before,
                     )
 
+                failure_window_start = now - timedelta(
+                    seconds=self.settings.hint_failed_window_seconds
+                )
+                recent_failed_times = list(
+                    db.scalars(
+                        select(HintRequest.completed_at)
+                        .where(
+                            HintRequest.student_id == student_id,
+                            HintRequest.status == "failed",
+                            HintRequest.completed_at.is_not(None),
+                            HintRequest.completed_at > failure_window_start,
+                        )
+                        .order_by(HintRequest.completed_at.asc())
+                    )
+                )
+                if (
+                    len(recent_failed_times)
+                    >= self.settings.hint_max_failed_attempts_per_window
+                ):
+                    oldest_failure = recent_failed_times[0]
+                    assert oldest_failure is not None
+                    retry_after = max(
+                        1,
+                        math.ceil(
+                            (
+                                oldest_failure
+                                + timedelta(
+                                    seconds=self.settings.hint_failed_window_seconds
+                                )
+                                - now
+                            ).total_seconds()
+                        ),
+                    )
+                    raise HintRequestRejectedError(
+                        "hint_failure_rate_limited",
+                        status_code=429,
+                        retry_after_seconds=retry_after,
+                        remaining_count=remaining_before,
+                    )
+
                 level: Literal["KM", "KH"] = "KM" if quota.used_count == 0 else "KH"
                 expires_at = now + timedelta(
                     seconds=self.settings.hint_request_expire_seconds
@@ -442,16 +482,20 @@ class HintOrchestrationService:
                 db.flush()
                 request_id = req.id
         except IntegrityError as exc:
-            with self.session_factory() as db:
-                existing = db.scalar(
-                    select(HintRequest).where(
+            with self.session_factory.begin() as db:
+                existing = db.execute(
+                    select(HintRequest)
+                    .where(
                         HintRequest.student_id == student_id,
                         HintRequest.request_key == cleaned_key,
                     )
-                )
+                    .with_for_update()
+                ).scalar_one_or_none()
                 if existing is not None:
+                    self._expire_request_if_needed(existing, now=now)
+                    db.flush()
                     quota_view = self.get_quota_status(
-                        db, student_id=student_id, problem_id=problem_id
+                        db, student_id=student_id, problem_id=existing.problem_id
                     )
                     db.expunge(existing)
                     return existing, quota_view
@@ -481,12 +525,52 @@ class HintOrchestrationService:
             db.expunge(queued)
             return queued, quota_view
 
+    def _sweep_unclaimable_requests(
+        self, db: Session, *, now: datetime, stale_before: datetime
+    ) -> None:
+        expired = list(
+            db.scalars(
+                select(HintRequest)
+                .where(
+                    HintRequest.status == "processing",
+                    HintRequest.expires_at <= now,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        for req in expired:
+            req.status = "failed"
+            req.error_code = "request_expired"
+            req.claim_token = None
+            req.completed_at = now
+
+        exhausted = list(
+            db.scalars(
+                select(HintRequest)
+                .where(
+                    HintRequest.status == "processing",
+                    HintRequest.expires_at > now,
+                    HintRequest.attempt_count >= self.settings.hint_worker_max_attempts,
+                    HintRequest.claimed_at.is_not(None),
+                    HintRequest.claimed_at <= stale_before,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        for req in exhausted:
+            req.status = "failed"
+            req.error_code = "worker_max_attempts_exceeded"
+            req.claim_token = None
+            req.completed_at = now
+
     def _claim_work(self, request_id: int | None = None) -> HintWorkItem | None:
         now = self.now_fn()
         stale_before = now - timedelta(
             seconds=self.settings.hint_worker_claim_timeout_seconds
         )
         with self.session_factory.begin() as db:
+            self._sweep_unclaimable_requests(db, now=now, stale_before=stale_before)
+            db.flush()
             query = (
                 select(HintRequest)
                 .where(
@@ -646,6 +730,9 @@ class HintOrchestrationService:
             logger.exception("hint_worker_unhandled_error request_id=%s", request_id)
             self._fail_work(work, "llm_worker_error")
             return self.process_request(request_id)
+        except BaseException:
+            self._fail_work(work, "request_aborted")
+            raise
         return self._finish_work(work, core_result)
 
     def process_next(self) -> bool:
@@ -668,6 +755,9 @@ class HintOrchestrationService:
         except Exception:
             logger.exception("hint_worker_unhandled_error request_id=%s", work.request_id)
             self._fail_work(work, "llm_worker_error")
+        except BaseException:
+            self._fail_work(work, "request_aborted")
+            raise
         return True
 
     def request_hint(

@@ -531,3 +531,58 @@ def test_hint_api_endpoints_and_history_integration(clean_database: None) -> Non
     finally:
         app.dependency_overrides.pop(get_hint_service, None)
 
+
+def test_repeated_hint_failures_trigger_failure_rate_limit(clean_database: None) -> None:
+    student_id, _, sub_id, run_id = create_graded_submission(failed_indexes={1})
+    clock = FakeClock(datetime(2026, 11, 2, 15, 0, 0, tzinfo=UTC))
+    settings = Settings(
+        llm_mode="fake",
+        hint_max_failed_attempts_per_window=2,
+        hint_failed_window_seconds=300,
+    )
+    adapter = FakeLLMAdapter(
+        responses=[
+            LLMGenerationResult(
+                raw_text=None,
+                latency_ms=20,
+                model_id="fake-poc-provider",
+                provider="fake",
+                error="llm_timeout",
+            ),
+            LLMGenerationResult(
+                raw_text=None,
+                latency_ms=20,
+                model_id="fake-poc-provider",
+                provider="fake",
+                error="llm_timeout",
+            ),
+        ]
+    )
+    service = HintOrchestrationService(
+        SessionLocal, adapter=adapter, settings=settings, now_fn=clock
+    )
+    req1, _ = service.request_hint(
+        student_id=student_id,
+        submission_id=sub_id,
+        grading_run_id=run_id,
+        request_key="fail-1",
+    )
+    assert req1.status == "failed"
+    req2, _ = service.request_hint(
+        student_id=student_id,
+        submission_id=sub_id,
+        grading_run_id=run_id,
+        request_key="fail-2",
+    )
+    assert req2.status == "failed"
+
+    with pytest.raises(HintRequestRejectedError) as rate_err:
+        service.request_hint(
+            student_id=student_id,
+            submission_id=sub_id,
+            grading_run_id=run_id,
+            request_key="fail-3-blocked",
+        )
+    assert rate_err.value.code == "hint_failure_rate_limited"
+    assert rate_err.value.status_code == 429
+

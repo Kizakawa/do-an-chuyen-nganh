@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -15,7 +15,28 @@ COPY requirements.lock pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.lock
 
-COPY . .
+FROM base AS test
+COPY requirements-dev.lock ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-dev.lock
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+COPY scripts ./scripts
+COPY tests ./tests
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps . \
+    && groupadd --system app \
+    && useradd --system --gid app --home-dir /app --no-create-home app \
+    && chown -R app:app /app
+
+USER app
+
+FROM base AS runtime
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+COPY scripts/create_student.py ./scripts/create_student.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-deps . \
     && groupadd --system app \

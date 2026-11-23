@@ -6,7 +6,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_student
+from app.api.dependencies import get_current_web_student
+from app.config import get_settings
 from app.api.serializers import serialize_history
 from app.database import get_db
 from app.models import Problem, Student, TestCase
@@ -14,6 +15,7 @@ from app.models import Problem, Student, TestCase
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+templates.env.globals["csrf_cookie_name"] = get_settings().auth_csrf_cookie_name
 router = APIRouter(tags=["web"], include_in_schema=False)
 
 
@@ -22,11 +24,18 @@ def index() -> RedirectResponse:
     return RedirectResponse(url="/ui/problems", status_code=302)
 
 
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request) -> HTMLResponse:
+    if get_settings().auth_mode == "demo":
+        return RedirectResponse(url="/ui/problems", status_code=302)
+    return templates.TemplateResponse(request=request, name="login.html", context={})
+
+
 @router.get("/ui/problems", response_class=HTMLResponse)
 def problem_list_page(
     request: Request,
     db: Session = Depends(get_db),
-    student: Student = Depends(get_current_student),
+    student: Student = Depends(get_current_web_student),
 ) -> HTMLResponse:
     problems = list(
         db.scalars(
@@ -47,7 +56,7 @@ def problem_detail_page(
     slug: str,
     request: Request,
     db: Session = Depends(get_db),
-    student: Student = Depends(get_current_student),
+    student: Student = Depends(get_current_web_student),
 ) -> HTMLResponse:
     problem = db.scalar(
         select(Problem).where(Problem.slug == slug, Problem.is_published.is_(True))
@@ -80,7 +89,7 @@ def problem_detail_page(
 def history_page(
     request: Request,
     db: Session = Depends(get_db),
-    student: Student = Depends(get_current_student),
+    student: Student = Depends(get_current_web_student),
 ) -> HTMLResponse:
     history = serialize_history(db, student.id)
     return templates.TemplateResponse(

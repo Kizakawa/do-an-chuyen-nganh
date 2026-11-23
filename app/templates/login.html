@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Đăng nhập · Python Practice</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  </head>
+  <body class="auth-page">
+    <main class="auth-card">
+      <p class="eyebrow">PYTHON PRACTICE</p>
+      <h1>Đăng nhập</h1>
+      <p>Dùng tài khoản sinh viên do quản trị viên cung cấp.</p>
+      <form id="login-form">
+        <label for="login-name">Tên đăng nhập</label>
+        <input id="login-name" name="login_name" autocomplete="username" required maxlength="100">
+        <label for="password">Mật khẩu</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512">
+        <button class="button primary" type="submit">Đăng nhập</button>
+        <p id="login-error" class="auth-error" role="alert"></p>
+      </form>
+    </main>
+    <script src="{{ url_for('static', path='/login.js') }}" defer></script>
+  </body>
+</html>

@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-cookie-name" content="{{ csrf_cookie_name }}">
     <title>{% block title %}Luyện Python{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
   </head>
@@ -14,10 +15,12 @@
         <a href="/ui/history">Lịch sử</a>
       </nav>
       <span class="student">Sinh viên: {{ student.login_name }}</span>
+      <button class="logout-button" id="logout" type="button">Đăng xuất</button>
     </header>
     <main class="page-shell">
       {% block content %}{% endblock %}
     </main>
     {% block scripts %}{% endblock %}
+    <script src="{{ url_for('static', path='/auth.js') }}" defer></script>
   </body>
 </html>

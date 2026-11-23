@@ -26,11 +26,31 @@ from app.models.base import Base, TimestampMixin
 
 class Student(TimestampMixin, Base):
     __tablename__ = "student"
+    __table_args__ = (
+        CheckConstraint("session_version >= 0", name="nonnegative_session_version"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     login_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    session_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     submissions: Mapped[list[Submission]] = relationship(back_populates="student")
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeat"
+
+    worker_name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class Problem(TimestampMixin, Base):
@@ -291,6 +311,7 @@ class HintRequest(Base):
             postgresql_where=text("status = 'processing'"),
         ),
         Index("ix_hint_request_submission_created", "submission_id", "created_at"),
+        Index("ix_hint_request_worker_queue", "status", "claimed_at", "id"),
         CheckConstraint("level IN ('KM', 'KH')", name="valid_level"),
         CheckConstraint(
             "status IN ('processing', 'succeeded', 'failed')",
@@ -300,6 +321,7 @@ class HintRequest(Base):
             "status <> 'succeeded' OR (hint_text IS NOT NULL AND char_length(hint_text) > 0)",
             name="succeeded_has_hint_text",
         ),
+        CheckConstraint("attempt_count >= 0", name="nonnegative_attempt_count"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -336,6 +358,13 @@ class HintRequest(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_token: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
 
     quota: Mapped[HelpQuota] = relationship(back_populates="hint_requests")

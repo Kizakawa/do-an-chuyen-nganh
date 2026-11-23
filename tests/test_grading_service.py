@@ -1,6 +1,5 @@
 import ast
 import json
-import re
 from collections.abc import Iterable
 
 from sqlalchemy import func, select
@@ -13,13 +12,18 @@ from app.models import GradingRun, Problem, Student, Submission, TestResult
 from app.seed import seed_all
 
 
-NONCE_PATTERN = re.compile(r"^_RUN_NONCE = (.+)$", re.MULTILINE)
-
-
 def nonce_from_source(source_code: str) -> str:
-    match = NONCE_PATTERN.search(source_code)
-    assert match is not None
-    return ast.literal_eval(match.group(1))
+    pad_a = b""
+    pad_b = b""
+    for line in source_code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("_pad_a = "):
+            pad_a = ast.literal_eval(stripped.split("=", 1)[1].strip())
+        elif stripped.startswith("_pad_b = "):
+            pad_b = ast.literal_eval(stripped.split("=", 1)[1].strip())
+    assert pad_a and pad_b
+    assert len(pad_a) == len(pad_b)
+    return bytes(a ^ b for a, b in zip(pad_a, pad_b, strict=True)).decode("ascii")
 
 
 def accepted_result(source_code: str, payload: dict) -> Judge0Result:

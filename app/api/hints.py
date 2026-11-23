@@ -2,10 +2,11 @@ from functools import lru_cache
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_student
+from app.api.dependencies import get_current_student, require_csrf
 from app.api.schemas import (
     DirectHintRequestCreate,
     HintRequestResponse,
@@ -76,6 +77,25 @@ def _execute_hint_request_with_bulkhead(
     grading_run_id: int,
     request_key: str,
 ) -> HintRequestResponse | JSONResponse:
+    if get_settings().hint_execution_mode == "worker":
+        try:
+            req, quota_view = service.enqueue_hint(
+                student_id=student_id,
+                submission_id=submission_id,
+                grading_run_id=grading_run_id,
+                request_key=request_key,
+            )
+        except HintRequestRejectedError as exc:
+            return _rejection_response(exc)
+        payload = serialize_hint_request(req, quota_view)
+        return JSONResponse(
+            status_code=(
+                status.HTTP_202_ACCEPTED
+                if req.status == "processing"
+                else status.HTTP_200_OK
+            ),
+            content=jsonable_encoder(payload),
+        )
     if not LLM_BULKHEAD_SEMAPHORE.acquire(blocking=False):
         return _busy_response()
     try:
@@ -102,6 +122,7 @@ def request_submission_hint(
     payload: SubmissionHintCreate,
     student: Student = Depends(get_current_student),
     service: HintOrchestrationService = Depends(get_hint_service),
+    _: None = Depends(require_csrf),
 ) -> HintRequestResponse | JSONResponse:
     return _execute_hint_request_with_bulkhead(
         service,
@@ -121,6 +142,7 @@ def create_hint_request(
     payload: DirectHintRequestCreate,
     student: Student = Depends(get_current_student),
     service: HintOrchestrationService = Depends(get_hint_service),
+    _: None = Depends(require_csrf),
 ) -> HintRequestResponse | JSONResponse:
     return _execute_hint_request_with_bulkhead(
         service,

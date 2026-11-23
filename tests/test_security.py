@@ -1,0 +1,127 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.config import Settings, get_settings
+from app.database import SessionLocal
+from app.main import app
+from app.models import Student
+from app.rate_limit import LoginRateLimitMiddleware
+from app.security import (
+    InvalidSessionToken,
+    create_session_token,
+    decode_session_token,
+    hash_password,
+    verify_password,
+)
+from app.seed import seed_all
+
+
+def test_password_hash_and_session_signature() -> None:
+    encoded = hash_password("correct horse battery staple")
+    assert verify_password("correct horse battery staple", encoded)
+    assert not verify_password("incorrect password", encoded)
+
+    token, csrf = create_session_token(
+        student_id=7, secret="s" * 32, ttl_seconds=300, now=1_000
+    )
+    payload = decode_session_token(token, secret="s" * 32, now=1_001)
+    assert payload["sid"] == 7
+    assert payload["csrf"] == csrf
+
+    try:
+        decode_session_token(token + "tampered", secret="s" * 32, now=1_001)
+    except InvalidSessionToken:
+        pass
+    else:
+        raise AssertionError("tampered session token must be rejected")
+
+
+def test_production_configuration_requires_secure_worker_mode() -> None:
+    try:
+        Settings(app_env="production")
+    except ValueError as exc:
+        assert "production_requires_auth_mode_session" in str(exc)
+    else:
+        raise AssertionError("insecure production settings must be rejected")
+
+    settings = Settings(
+        app_env="production",
+        auth_mode="session",
+        auth_session_secret="s" * 48,
+        auth_cookie_secure=True,
+        hint_execution_mode="worker",
+        hint_request_expire_seconds=300,
+        database_url="postgresql+psycopg://app:secret@db:5432/app",
+        judge0_base_url="https://judge0.internal.example.edu",
+        judge0_language_id=100,
+        llm_api_key="real-secret-for-validation",
+        trusted_hosts="practice.example.edu",
+    )
+    assert settings.app_env == "production"
+
+
+def test_login_rate_limiter_blocks_repeated_failures() -> None:
+    test_app = FastAPI()
+    test_app.add_middleware(
+        LoginRateLimitMiddleware, max_attempts=2, window_seconds=60
+    )
+
+    @test_app.post("/api/auth/login")
+    def always_reject() -> None:
+        raise HTTPException(status_code=401, detail="invalid_credentials")
+
+    with TestClient(test_app) as rate_client:
+        assert rate_client.post("/api/auth/login").status_code == 401
+        assert rate_client.post("/api/auth/login").status_code == 401
+        blocked = rate_client.post("/api/auth/login")
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"] == "60"
+
+
+def test_session_login_and_csrf_protection(clean_database: None, monkeypatch) -> None:
+    with SessionLocal.begin() as db:
+        seed_all(db)
+        student = db.scalar(select(Student).where(Student.login_name == "demo"))
+        assert student is not None
+        student.password_hash = hash_password("a secure demo password")
+
+    monkeypatch.setenv("AUTH_MODE", "session")
+    monkeypatch.setenv("AUTH_SESSION_SECRET", "x" * 48)
+    monkeypatch.setenv("AUTH_COOKIE_SECURE", "false")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            unauthenticated = client.get("/api/problems")
+            assert unauthenticated.status_code == 401
+
+            logged_in = client.post(
+                "/api/auth/login",
+                json={"login_name": "demo", "password": "a secure demo password"},
+            )
+            assert logged_in.status_code == 200
+            assert logged_in.json()["login_name"] == "demo"
+            csrf = client.cookies.get("python_practice_csrf")
+            assert csrf
+
+            problem_id = client.get("/api/problems").json()[0]["id"]
+            rejected = client.post(
+                "/api/submissions",
+                json={"problem_id": problem_id, "source_code": "def f(): return 1"},
+            )
+            assert rejected.status_code == 403
+
+            accepted = client.post(
+                "/api/submissions",
+                headers={"X-CSRF-Token": csrf},
+                json={"problem_id": problem_id, "source_code": "def f(): return 1"},
+            )
+            assert accepted.status_code == 202
+
+            logged_out = client.post(
+                "/api/auth/logout", headers={"X-CSRF-Token": csrf}
+            )
+            assert logged_out.status_code == 204
+            assert client.get("/api/problems").status_code == 401
+    finally:
+        get_settings.cache_clear()

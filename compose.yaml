@@ -22,12 +22,20 @@ services:
         required: false
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://python_poc:python_poc@db:5432/python_poc}
+      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-https://ce.judge0.com}
+      JUDGE0_LANGUAGE_ID: ${JUDGE0_LANGUAGE_ID:-100}
+      LLM_MODE: ${LLM_MODE:-fake}
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
 
   test:
     build: .
@@ -58,14 +66,19 @@ services:
   worker:
     build: .
     profiles: ["grading"]
+    restart: unless-stopped
     env_file:
       - path: .env
         required: false
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://python_poc:python_poc@db:5432/python_poc}
+      JUDGE0_BASE_URL: ${JUDGE0_BASE_URL:-https://ce.judge0.com}
+      JUDGE0_LANGUAGE_ID: ${JUDGE0_LANGUAGE_ID:-100}
     entrypoint: ["python", "-m", "app.worker"]
     depends_on:
       db:
+        condition: service_healthy
+      api:
         condition: service_healthy
 
 volumes:

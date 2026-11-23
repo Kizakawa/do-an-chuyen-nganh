@@ -1,0 +1,41 @@
+source_key,problem_slug,variant,submission_id,grading_run_id,run_status,all_passed,passed_count,expected_test_count,failed_test_indexes,expected_failed_test_indexes,matched_expectation,technical_error_code,duration_ms
+P01,p01-sum-numbers,reference,5,5,completed,True,8,8,[],[],True,,5582
+P01,p01-sum-numbers,wrong:return_too_early,6,6,completed,False,2,8,"[1, 2, 3, 6, 7, 8]","[1, 2, 3, 6, 7, 8]",True,,6139
+P02,p02-count-even,reference,7,7,completed,True,8,8,[],[],True,,5382
+P02,p02-count-even,wrong:common_mistake,8,8,completed,False,3,8,"[4, 5, 6, 7, 8]","[4, 5, 6, 7, 8]",True,,5931
+P03,p03-find-max,reference,9,9,completed,True,8,8,[],[],True,,5523
+P03,p03-find-max,wrong:common_mistake,10,10,completed,False,5,8,"[2, 3, 7]","[2, 3, 7]",True,,7311
+P04,p04-reverse-text,reference,11,11,completed,True,8,8,[],[],True,,5381
+P04,p04-reverse-text,wrong:common_mistake,12,12,completed,False,1,8,"[1, 3, 4, 5, 6, 7, 8]","[1, 3, 4, 5, 6, 7, 8]",True,,5479
+P05,p05-is-palindrome,reference,13,13,completed,True,8,8,[],[],True,,5620
+P05,p05-is-palindrome,wrong:common_mistake,14,14,completed,False,7,8,[3],[3],True,,5434
+P06,p06-factorial,reference,15,15,completed,True,8,8,[],[],True,,7381
+P06,p06-factorial,wrong:common_mistake,16,16,completed,False,2,8,"[3, 4, 5, 6, 7, 8]","[3, 4, 5, 6, 7, 8]",True,,6124
+P07,p07-fibonacci,reference,17,17,completed,True,8,8,[],[],True,,8422
+P07,p07-fibonacci,wrong:common_mistake,18,18,completed,False,1,8,"[1, 3, 4, 5, 6, 7, 8]","[1, 3, 4, 5, 6, 7, 8]",True,,6300
+P08,p08-is-prime,reference,19,19,completed,True,8,8,[],[],True,,6167
+P08,p08-is-prime,wrong:common_mistake,20,20,completed,False,6,8,"[3, 7]","[3, 7]",True,,5392
+P09,p09-greatest-common-divisor,reference,21,21,completed,True,8,8,[],[],True,,5211
+P09,p09-greatest-common-divisor,wrong:common_mistake,22,22,completed,False,3,8,"[1, 2, 5, 6, 8]","[1, 2, 5, 6, 8]",True,,5466
+P10,p10-unique-in-order,reference,23,23,completed,True,8,8,[],[],True,,6905
+P10,p10-unique-in-order,wrong:common_mistake,24,24,completed,False,5,8,"[4, 5, 7]","[4, 5, 7]",True,,5424
+P11,p11-second-largest,reference,25,25,completed,True,8,8,[],[],True,,5491
+P11,p11-second-largest,wrong:common_mistake,26,26,completed,False,5,8,"[2, 5, 7]","[2, 5, 7]",True,,5415
+P12,p12-merge-sorted,reference,27,27,completed,True,8,8,[],[],True,,6028
+P12,p12-merge-sorted,wrong:common_mistake,28,28,completed,False,3,8,"[1, 4, 6, 7, 8]","[1, 4, 6, 7, 8]",True,,5937
+P13,p13-first-index,reference,29,29,completed,True,8,8,[],[],True,,5319
+P13,p13-first-index,wrong:common_mistake,30,30,completed,False,6,8,"[3, 6]","[3, 6]",True,,5364
+P14,p14-character-counts,reference,31,31,completed,True,8,8,[],[],True,,5871
+P14,p14-character-counts,wrong:common_mistake,32,32,completed,False,4,8,"[3, 4, 7, 8]","[3, 4, 7, 8]",True,,6566
+P15,p15-digit-sum,reference,33,33,completed,True,8,8,[],[],True,,5287
+P15,p15-digit-sum,wrong:common_mistake,34,34,completed,False,6,8,"[3, 6]","[3, 6]",True,,5657
+P16,p16-normalize-spaces,reference,35,35,completed,True,8,8,[],[],True,,5668
+P16,p16-normalize-spaces,wrong:common_mistake,36,36,completed,False,3,8,"[1, 4, 6, 7, 8]","[1, 4, 6, 7, 8]",True,,5687
+P17,p17-ordered-intersection,reference,37,37,completed,True,8,8,[],[],True,,6071
+P17,p17-ordered-intersection,wrong:common_mistake,38,38,completed,False,6,8,"[3, 7]","[3, 7]",True,,5549
+P18,p18-diagonal-sum,reference,39,39,completed,True,8,8,[],[],True,,7362
+P18,p18-diagonal-sum,wrong:common_mistake,40,40,completed,False,3,8,"[2, 3, 4, 6, 7]","[2, 3, 4, 6, 7]",True,,5772
+P19,p19-word-count,reference,41,41,completed,True,8,8,[],[],True,,5985
+P19,p19-word-count,wrong:common_mistake,42,42,completed,False,3,8,"[2, 3, 5, 6, 8]","[2, 3, 5, 6, 8]",True,,7769
+P20,p20-balanced-brackets,reference,43,43,completed,True,8,8,[],[],True,,7390
+P20,p20-balanced-brackets,wrong:common_mistake,44,44,completed,False,6,8,"[5, 7]","[5, 7]",True,,7103

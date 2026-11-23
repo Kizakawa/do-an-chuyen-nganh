@@ -11,6 +11,9 @@ def test_liveness() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in response.headers["content-security-policy"]
 
 
 def test_readiness_queries_postgresql() -> None:

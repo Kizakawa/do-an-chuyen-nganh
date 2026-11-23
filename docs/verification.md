@@ -99,9 +99,9 @@ của sinh viên khác và lịch sử đúng chủ sở hữu.
 | Lời giải tham chiếu | PASS cú pháp: 20/20 |
 | Mã sai mẫu | PASS cú pháp: 20/20 |
 | Expected so với oracle độc lập | PASS: 160/160 |
-| Seed 20 bài trên PostgreSQL | CHƯA CHẠY vì Docker daemon bị chặn |
-| 20 lời giải qua Judge0 thật | CHƯA CHẠY vì chưa có instance/cấu hình chạy được |
-| 20 mã sai qua Judge0 thật | CHƯA CHẠY vì chưa có instance/cấu hình chạy được |
+| Seed 20 bài trên PostgreSQL | PASS khi tái kiểm tra 04/11/2026; xem Phần 8 |
+| 20 lời giải qua Judge0 thật | PASS: 20/20 bài, 160/160 test; xem Phần 8 |
+| 20 mã sai qua Judge0 thật | PASS: 20/20 bị phát hiện; xem Phần 8 |
 
 Lệnh kiểm tra nội dung đã chạy:
 
@@ -152,5 +152,66 @@ Ngày kiểm tra: 02/11/2026 (Python 3.12.6 trên Windows `.venv`).
 | Chạy Offline Benchmark Pipeline `M1–M5` & xuất CSV chấm chéo Rubric `R1–R5` cho 20 bài (40 mẫu KM + KH) | `.\.venv\Scripts\python.exe scripts/run_benchmark_m1_m5.py --mode fake --limit 20` | PASS: sinh đủ `benchmark_generations.jsonl`, `rubric_evaluation_sheet.csv` (40 dòng), `summary_m1_m5.json` (`N=40, S=40`) |
 | Unit tests không phụ thuộc PostgreSQL (`test_comparison`, `test_harness`, `test_judge0_client`, `test_problem_catalog`, `test_hints_and_guardrail`) | `.\.venv\Scripts\python.exe -m pytest tests/test_comparison.py tests/test_harness.py tests/test_judge0_client.py tests/test_problem_catalog.py tests/test_hints_and_guardrail.py` | PASS: **24 passed in 0.91s** (không còn cảnh báo `PytestCollectionWarning` trên `TestCase`/`TestResult`) |
 | Kiểm tra cú pháp JavaScript giao diện sau tối ưu | `node --check app/static/problem.js` | PASS (exit code 0) |
-| Integration tests `test_hint_quota_integration.py` (Quota 3 lượt, Cooldown 120s, Idempotency, Lease recovery, Refund khi guardrail fail) trên PostgreSQL | `docker compose run --rm test` | CHƯA CHẠY trên máy local hiện tại (cần khởi chạy container PostgreSQL qua Docker Compose) |
-| Benchmark thực nghiệm với `Qwen2.5-Coder-7B-Instruct` trên Colab T4 (`--mode colab`) | `.\.venv\Scripts\python.exe scripts/run_benchmark_m1_m5.py --mode colab --limit 20` | CHƯA CHẠY (cần cấu hình `COLAB_QWEN_BASE_URL` trỏ tới ngrok/cloudflared endpoint trên Google Colab) |
+| Integration tests `test_hint_quota_integration.py` (Quota 3 lượt, Cooldown 120s, Idempotency, lease recovery, không trừ lượt khi guardrail fail) trên PostgreSQL | Docker + PostgreSQL 17.11 | PASS khi tái kiểm tra 04/11/2026, gồm hai ca hồi quy persist request hết hạn |
+| Benchmark thực nghiệm với `Qwen2.5-Coder-7B-Instruct` trên Colab T4 (`--mode colab`) | `.\.venv\Scripts\python.exe scripts/run_benchmark_m1_m5.py --mode colab --limit 20` | CHƯA CHẠY (cần cấu hình `COLAB_QWEN_ENDPOINT_URL` trỏ tới ngrok/cloudflared endpoint trên Google Colab) |
+
+## Phần 8 — Tái kiểm chứng Docker và nghiệm thu toàn bộ catalog
+
+Ngày kiểm tra: 04/11/2026. Môi trường: Python 3.12.16,
+PostgreSQL 17.11, pytest 9.2.0; dependency snapshot được lưu tại
+`requirements.lock`.
+
+| Kiểm tra | Kết quả thực tế |
+| --- | --- |
+| Build Docker image từ `Dockerfile` | PASS |
+| Alembic `upgrade head → downgrade base → upgrade head` | PASS |
+| Toàn bộ pytest trên PostgreSQL thật | PASS: **69 passed, 1 cảnh báo thư viện ngoài, 9.75 giây** sau khi rebuild từ `requirements.lock` |
+| Regression nonce sau hardening harness | PASS: 5 ca grading service cũ đã đồng bộ với `_pad_a`/`_pad_b` |
+| Persist request hết hạn khi dùng lại cùng idempotency key | PASS |
+| Persist request hết hạn khi GET theo request ID | PASS |
+| Chính sách hidden-only mặc định | PASS: thống nhất `false` với `.env.example` và tài liệu |
+| Judge0 CE `/languages`, language ID 100 | PASS: Python 3.12.5 |
+| 20 reference solutions qua Judge0 thật | PASS: **20/20 bài, 160/160 test** |
+| 20 wrong samples qua Judge0 thật | PASS: **20/20 bị phát hiện** |
+| Tập test trượt thực tế so với khai báo catalog | PASS: **20/20 khớp chính xác** |
+| Lỗi hạ tầng/thiếu kết quả trong 40 ca catalog | PASS: không có |
+
+Lệnh nghiệm thu catalog:
+
+```bash
+python -m scripts.run_judge0_catalog_acceptance \
+  --limit 20 --variants both --delay-seconds 1 \
+  --output-dir artifacts/acceptance
+```
+
+Artifacts:
+
+- `artifacts/acceptance/judge0_catalog_summary.json`;
+- `artifacts/acceptance/judge0_catalog_acceptance.jsonl`;
+- `artifacts/acceptance/judge0_catalog_acceptance.csv`.
+
+Giới hạn còn lại: benchmark với Qwen/API model thật và chấm rubric
+R1–R5 chưa chạy do repository không có endpoint/API key. Kết quả fake provider
+không được dùng thay cho bằng chứng chất lượng model thật.
+
+## Phần 9 — Production hardening
+
+Ngày kiểm tra: 04/11/2026. Image cuối: `python-practice-production:final`.
+
+| Kiểm tra | Kết quả thực tế |
+| --- | --- |
+| Build Docker non-root từ dependency lock | PASS |
+| Alembic `0001 → 0007 → base → 0007` | PASS |
+| Toàn bộ pytest trong image cuối | PASS: **74 passed, 1 cảnh báo thư viện ngoài, 13.79 giây** |
+| Password scrypt, session ký HMAC, session revocation | PASS |
+| CSRF cho API ghi và login rate limit | PASS |
+| CSP và security headers | PASS |
+| Hint queue/worker PostgreSQL với lease và claim token | PASS |
+| Worker heartbeat và production readiness | PASS |
+| Production fail-fast với cấu hình không an toàn | PASS |
+| Import ứng dụng bằng cấu hình production hợp lệ | PASS |
+| Cú pháp Compose production, CI và YAML | PASS |
+
+Việc triển khai lên server thật vẫn cần operator cung cấp domain/TLS, secret,
+database password, API key LLM và địa chỉ Judge0 riêng. Các placeholder trong
+`.env.production.example` bị ứng dụng chủ động từ chối khi khởi động.

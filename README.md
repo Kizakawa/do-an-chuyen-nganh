@@ -187,7 +187,16 @@ python -m scripts.poc_judge0_memory
 
 # 4. Chạy Batch Benchmark ngoại tuyến và xuất JSONL + CSV Rubric R1–R5 + chỉ số M1–M5
 python -m scripts.run_benchmark_m1_m5 --mode fake --limit 20 --output-dir artifacts/benchmark
+
+# 5. Nghiệm thu 20 reference + 20 wrong sample qua PostgreSQL và Judge0 thật
+# Yêu cầu DATABASE_URL, JUDGE0_BASE_URL và JUDGE0_LANGUAGE_ID đã cấu hình.
+python -m scripts.run_judge0_catalog_acceptance \
+  --limit 20 --variants both --output-dir artifacts/acceptance
 ```
+
+Triển khai production (xác thực session, CSRF, grading worker, hint worker,
+heartbeat/readiness, backup và rollback): xem
+[`docs/production-deployment.md`](docs/production-deployment.md).
 
 ---
 

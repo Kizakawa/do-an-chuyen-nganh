@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_student
+from app.api.dependencies import get_current_student, require_csrf
 from app.api.schemas import (
     GradingRunResponse,
     SubmissionAccepted,
@@ -24,6 +24,7 @@ def create_submission(
     payload: SubmissionCreate,
     db: Session = Depends(get_db),
     student: Student = Depends(get_current_student),
+    _: None = Depends(require_csrf),
 ) -> SubmissionAccepted:
     settings = get_settings()
     source_code = payload.source_code

@@ -301,6 +301,172 @@ def test_only_one_processing_request_per_student_problem_and_stale_recovery(
     assert quota_view.used_count == 1
 
 
+def test_expired_idempotency_key_is_persisted_before_returning(
+    clean_database: None,
+) -> None:
+    student_id, problem_id, sub_id, run_id = create_graded_submission(
+        failed_indexes={1}
+    )
+    now = datetime(2026, 11, 2, 13, 0, 0, tzinfo=UTC)
+    clock = FakeClock(now)
+    service = HintOrchestrationService(
+        SessionLocal,
+        adapter=FakeLLMAdapter(),
+        settings=Settings(llm_mode="fake"),
+        now_fn=clock,
+    )
+
+    with SessionLocal.begin() as db:
+        db.add(HelpQuota(student_id=student_id, problem_id=problem_id, used_count=0))
+        db.flush()
+        db.add(
+            HintRequest(
+                student_id=student_id,
+                problem_id=problem_id,
+                submission_id=sub_id,
+                grading_run_id=run_id,
+                request_key="expired-same-key",
+                level="KM",
+                status="processing",
+                prompt_version="v1.0",
+                model_id="fake",
+                evidence_snapshot={},
+                generation_log=[],
+                created_at=now,
+                expires_at=now + timedelta(seconds=60),
+            )
+        )
+
+    clock.advance(65)
+    expired_req, quota_view = service.request_hint(
+        student_id=student_id,
+        submission_id=sub_id,
+        grading_run_id=run_id,
+        request_key="expired-same-key",
+    )
+    assert expired_req.status == "failed"
+    assert expired_req.error_code == "request_expired"
+    assert expired_req.completed_at == clock.current
+    assert quota_view.used_count == 0
+    assert quota_view.has_processing_request is False
+
+    with SessionLocal() as db:
+        persisted = db.scalar(
+            select(HintRequest).where(
+                HintRequest.student_id == student_id,
+                HintRequest.request_key == "expired-same-key",
+            )
+        )
+        assert persisted is not None
+        assert persisted.status == "failed"
+        assert persisted.error_code == "request_expired"
+        assert persisted.completed_at == clock.current
+
+    replacement, replacement_quota = service.request_hint(
+        student_id=student_id,
+        submission_id=sub_id,
+        grading_run_id=run_id,
+        request_key="replacement-after-expiry",
+    )
+    assert replacement.status == "succeeded"
+    assert replacement_quota.used_count == 1
+
+
+def test_get_expired_request_persists_failed_status(clean_database: None) -> None:
+    student_id, problem_id, sub_id, run_id = create_graded_submission(
+        failed_indexes={1}
+    )
+    now = datetime(2026, 11, 2, 14, 0, 0, tzinfo=UTC)
+    clock = FakeClock(now)
+    service = HintOrchestrationService(
+        SessionLocal,
+        adapter=FakeLLMAdapter(),
+        settings=Settings(llm_mode="fake"),
+        now_fn=clock,
+    )
+
+    with SessionLocal.begin() as db:
+        db.add(HelpQuota(student_id=student_id, problem_id=problem_id, used_count=0))
+        db.flush()
+        req = HintRequest(
+            student_id=student_id,
+            problem_id=problem_id,
+            submission_id=sub_id,
+            grading_run_id=run_id,
+            request_key="expired-get-key",
+            level="KM",
+            status="processing",
+            prompt_version="v1.0",
+            model_id="fake",
+            evidence_snapshot={},
+            generation_log=[],
+            created_at=now,
+            expires_at=now + timedelta(seconds=60),
+        )
+        db.add(req)
+        db.flush()
+        request_id = req.id
+
+    clock.advance(65)
+    with SessionLocal() as db:
+        found = service.get_hint_request(
+            db,
+            student_id=student_id,
+            request_id=request_id,
+        )
+    assert found is not None
+    expired_req, quota_view = found
+    assert expired_req.status == "failed"
+    assert expired_req.error_code == "request_expired"
+    assert quota_view.has_processing_request is False
+
+    with SessionLocal() as db:
+        persisted = db.get(HintRequest, request_id)
+        assert persisted is not None
+        assert persisted.status == "failed"
+        assert persisted.error_code == "request_expired"
+        assert persisted.completed_at == clock.current
+
+
+def test_async_hint_worker_claims_and_finishes_queued_request(
+    clean_database: None,
+) -> None:
+    student_id, _, sub_id, run_id = create_graded_submission(failed_indexes={1})
+    service = HintOrchestrationService(
+        SessionLocal,
+        adapter=FakeLLMAdapter(),
+        settings=Settings(
+            llm_mode="fake",
+            hint_execution_mode="worker",
+            hint_request_expire_seconds=300,
+        ),
+    )
+
+    queued, initial_quota = service.enqueue_hint(
+        student_id=student_id,
+        submission_id=sub_id,
+        grading_run_id=run_id,
+        request_key="async-worker-key",
+    )
+    assert queued.status == "processing"
+    assert queued.attempt_count == 0
+    assert initial_quota.used_count == 0
+
+    assert service.process_next() is True
+    assert service.process_next() is False
+
+    with SessionLocal() as db:
+        completed = db.get(HintRequest, queued.id)
+        assert completed is not None
+        assert completed.status == "succeeded"
+        assert completed.attempt_count == 1
+        assert completed.claimed_at is not None
+        assert completed.claim_token is None
+        quota = db.get(HelpQuota, (student_id, completed.problem_id))
+        assert quota is not None
+        assert quota.used_count == 1
+
+
 def test_hidden_only_failure_is_rejected_without_consuming_quota(
     clean_database: None,
 ) -> None:

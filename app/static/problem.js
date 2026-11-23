@@ -159,6 +159,18 @@
     return card;
   }
 
+  async function pollHintRequest(requestId, attempts = 0) {
+    if (attempts >= 90) throw new Error("Yêu cầu gợi ý chờ quá lâu. Vui lòng thử lại sau.");
+    const response = await fetch(`/api/hint-requests/${requestId}`);
+    if (!response.ok) throw new Error("Không đọc được trạng thái gợi ý.");
+    const payload = await response.json();
+    if (payload.status === "processing") {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      return pollHintRequest(requestId, attempts + 1);
+    }
+    return payload;
+  }
+
   function renderHintList(hints) {
     if (!hintList) return;
     hintList.replaceChildren();
@@ -442,7 +454,10 @@ json.dumps(_out, ensure_ascii=False)
     try {
       const response = await fetch("/api/submissions", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {
+          "Content-Type": "application/json",
+          ...(window.pythonPracticeCsrfHeaders ? window.pythonPracticeCsrfHeaders() : {}),
+        },
         body: JSON.stringify({problem_id: problemId, source_code: source.value}),
       });
       const payload = await response.json();
@@ -470,13 +485,16 @@ json.dumps(_out, ensure_ascii=False)
       try {
         const response = await fetch(`/api/submissions/${activeSubmissionId}/hints`, {
           method: "POST",
-          headers: {"Content-Type": "application/json"},
+          headers: {
+            "Content-Type": "application/json",
+            ...(window.pythonPracticeCsrfHeaders ? window.pythonPracticeCsrfHeaders() : {}),
+          },
           body: JSON.stringify({
             grading_run_id: activeRunId,
             request_key: makeRequestKey(),
           }),
         });
-        const payload = await response.json();
+        let payload = await response.json();
         if (!response.ok) {
           if (typeof payload.remaining_count === "number") {
             currentQuota.remaining_count = payload.remaining_count;
@@ -486,6 +504,10 @@ json.dumps(_out, ensure_ascii=False)
             startCooldownCountdown(payload.retry_after_seconds);
           }
           throw new Error(formatHintError(payload.error_code || payload.detail));
+        }
+        if (payload.status === "processing") {
+          if (hintMessage) hintMessage.textContent = "Gợi ý đang chờ worker AI xử lý...";
+          payload = await pollHintRequest(payload.request_id);
         }
         if (payload.quota) {
           renderQuota(payload.quota);

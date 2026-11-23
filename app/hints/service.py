@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 import math
 import re
+import secrets
 from typing import Any, Callable, Literal
 
 from sqlalchemy import select
@@ -50,6 +51,17 @@ class CoreHintResult:
     generation_log: list[dict[str, Any]]
     any_leaked: bool
     error_code: str | None
+
+
+@dataclass(frozen=True)
+class HintWorkItem:
+    request_id: int
+    claim_token: str
+    student_id: int
+    problem_id: int
+    level: Literal["KM", "KH"]
+    context: HintContextV1
+    reference_code: str | None
 
 
 @dataclass(frozen=True)
@@ -198,6 +210,19 @@ class HintOrchestrationService:
             req.completed_at = now
         return stale_requests
 
+    @staticmethod
+    def _expire_request_if_needed(
+        req: HintRequest,
+        *,
+        now: datetime,
+    ) -> bool:
+        if req.status != "processing" or req.expires_at > now:
+            return False
+        req.status = "failed"
+        req.error_code = "request_expired"
+        req.completed_at = now
+        return True
+
     def get_quota_status(
         self,
         db: Session,
@@ -241,7 +266,7 @@ class HintOrchestrationService:
             has_processing_request=active_processing is not None,
         )
 
-    def request_hint(
+    def enqueue_hint(
         self,
         *,
         student_id: int,
@@ -255,25 +280,28 @@ class HintOrchestrationService:
 
         now = self.now_fn()
 
-        # Bước 1: Kiểm tra idempotency key và dựng HintContextV1 trước khi giữ khóa quota
-        with self.session_factory() as db:
-            existing = db.scalar(
-                select(HintRequest).where(
+        # Bước 1: Kiểm tra idempotency key trong giao dịch ngắn. Nếu request
+        # cũ đã hết hạn, phải lưu trạng thái failed xuống DB trước khi trả về.
+        with self.session_factory.begin() as db:
+            existing = db.execute(
+                select(HintRequest)
+                .where(
                     HintRequest.student_id == student_id,
                     HintRequest.request_key == cleaned_key,
                 )
-            )
+                .with_for_update()
+            ).scalar_one_or_none()
             if existing is not None:
+                self._expire_request_if_needed(existing, now=now)
+                db.flush()
                 quota_view = self.get_quota_status(
                     db, student_id=student_id, problem_id=existing.problem_id
                 )
                 db.expunge(existing)
-                if existing.status == "processing" and existing.expires_at <= now:
-                    existing.status = "failed"
-                    existing.error_code = "request_expired"
-                    existing.completed_at = now
                 return existing, quota_view
 
+        # Dựng context ngoài giao dịch khóa quota/LLM.
+        with self.session_factory() as db:
             try:
                 context = build_hint_context(
                     db,
@@ -302,10 +330,6 @@ class HintOrchestrationService:
                     "no_public_evidence_available", status_code=409
                 )
 
-            problem_reference_code = db.scalar(
-                select(Problem.reference_code).where(Problem.id == context.problem_id)
-            )
-
         problem_id = context.problem_id
         max_quota = self.effective_max_quota
 
@@ -313,15 +337,19 @@ class HintOrchestrationService:
         now = self.now_fn()
         try:
             with self.session_factory.begin() as db:
-                existing = db.scalar(
-                    select(HintRequest).where(
+                existing = db.execute(
+                    select(HintRequest)
+                    .where(
                         HintRequest.student_id == student_id,
                         HintRequest.request_key == cleaned_key,
                     )
-                )
+                    .with_for_update()
+                ).scalar_one_or_none()
                 if existing is not None:
+                    self._expire_request_if_needed(existing, now=now)
+                    db.flush()
                     quota_view = self.get_quota_status(
-                        db, student_id=student_id, problem_id=problem_id
+                        db, student_id=student_id, problem_id=existing.problem_id
                     )
                     db.expunge(existing)
                     return existing, quota_view
@@ -432,7 +460,7 @@ class HintOrchestrationService:
             ) from exc
 
         logger.info(
-            "hint_request_started hint_request_id=%s student_id=%s problem_id=%s "
+            "hint_request_queued hint_request_id=%s student_id=%s problem_id=%s "
             "submission_id=%s grading_run_id=%s level=%s provider=%s model=%s",
             request_id,
             student_id,
@@ -443,64 +471,98 @@ class HintOrchestrationService:
             self.adapter.provider_name,
             self.adapter.model_id,
         )
+        with self.session_factory() as db:
+            queued = db.get(HintRequest, request_id)
+            if queued is None:
+                raise RuntimeError(f"hint_request_missing_after_enqueue:{request_id}")
+            quota_view = self.get_quota_status(
+                db, student_id=student_id, problem_id=problem_id
+            )
+            db.expunge(queued)
+            return queued, quota_view
 
-        # Bước 3: Gọi LLM và kiểm duyệt Guardrail BÊN NGOÀI giao dịch CSDL
-        core_result = generate_and_validate_hint_core(
-            context,
-            level,
-            self.adapter,
-            max_retries=self.settings.hint_max_retries,
-            reference_code=problem_reference_code,
-            token_overlap_threshold=self.settings.guardrail_token_overlap_threshold,
-            temperature=self.settings.llm_temperature,
-            timeout_seconds=self.settings.llm_timeout_seconds,
-            max_tokens=self.settings.llm_max_tokens,
+    def _claim_work(self, request_id: int | None = None) -> HintWorkItem | None:
+        now = self.now_fn()
+        stale_before = now - timedelta(
+            seconds=self.settings.hint_worker_claim_timeout_seconds
         )
+        with self.session_factory.begin() as db:
+            query = (
+                select(HintRequest)
+                .where(
+                    HintRequest.status == "processing",
+                    HintRequest.expires_at > now,
+                    HintRequest.attempt_count < self.settings.hint_worker_max_attempts,
+                    (HintRequest.claimed_at.is_(None))
+                    | (HintRequest.claimed_at <= stale_before),
+                )
+                .order_by(HintRequest.id)
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if request_id is not None:
+                query = query.where(HintRequest.id == request_id)
+            req = db.execute(query).scalar_one_or_none()
+            if req is None:
+                return None
+            claim_token = secrets.token_urlsafe(24)
+            req.claimed_at = now
+            req.claim_token = claim_token
+            req.attempt_count += 1
+            reference_code = db.scalar(
+                select(Problem.reference_code).where(Problem.id == req.problem_id)
+            )
+            context = HintContextV1.model_validate(req.evidence_snapshot)
+            return HintWorkItem(
+                request_id=req.id,
+                claim_token=claim_token,
+                student_id=req.student_id,
+                problem_id=req.problem_id,
+                level=req.level,  # type: ignore[arg-type]
+                context=context,
+                reference_code=reference_code,
+            )
 
-        # Bước 4: Giao dịch ngắn hoàn tất nguyên tử và cập nhật hạn mức
+    def _finish_work(
+        self, work: HintWorkItem, core_result: CoreHintResult
+    ) -> tuple[HintRequest, QuotaStatusView] | None:
         completed_now = self.now_fn()
+        max_quota = self.effective_max_quota
         with self.session_factory.begin() as db:
             quota = db.execute(
                 select(HelpQuota)
                 .where(
-                    HelpQuota.student_id == student_id,
-                    HelpQuota.problem_id == problem_id,
+                    HelpQuota.student_id == work.student_id,
+                    HelpQuota.problem_id == work.problem_id,
                 )
                 .with_for_update()
             ).scalar_one()
             req = db.execute(
                 select(HintRequest)
-                .where(HintRequest.id == request_id)
+                .where(HintRequest.id == work.request_id)
                 .with_for_update()
             ).scalar_one()
+            if req.status != "processing" or req.claim_token != work.claim_token:
+                return None
 
             used_before = quota.used_count
-            if req.status != "processing":
-                quota_view = self.get_quota_status(
-                    db, student_id=student_id, problem_id=problem_id
-                )
-                db.expunge(req)
-                return req, quota_view
-
             req.generation_log = core_result.generation_log
             req.prompt_version = core_result.prompt_version
             req.model_id = core_result.model_id
+            req.claim_token = None
 
             if completed_now > req.expires_at:
                 req.status = "failed"
                 req.error_code = "request_expired"
                 req.is_leaked = core_result.any_leaked
                 req.completed_at = completed_now
-            elif (
-                core_result.valid_hint is not None
-                and quota.used_count < max_quota
-            ):
+            elif core_result.valid_hint is not None and quota.used_count < max_quota:
                 req.status = "succeeded"
                 req.hint_text = core_result.valid_hint
                 req.is_leaked = False
                 req.error_code = None
                 req.completed_at = completed_now
-                quota.used_count = quota.used_count + 1
+                quota.used_count += 1
                 quota.next_allowed_at = completed_now + timedelta(
                     seconds=self.settings.hint_cooldown_seconds
                 )
@@ -517,16 +579,16 @@ class HintOrchestrationService:
             final_status = req.status
             final_error = req.error_code
             quota_view = self.get_quota_status(
-                db, student_id=student_id, problem_id=problem_id
+                db, student_id=work.student_id, problem_id=work.problem_id
             )
             db.expunge(req)
 
         logger.info(
             "hint_request_finished hint_request_id=%s status=%s level=%s "
             "provider=%s model=%s is_leaked=%s used_before=%s used_after=%s error_code=%s",
-            request_id,
+            work.request_id,
             final_status,
-            level,
+            work.level,
             core_result.provider,
             core_result.model_id,
             core_result.any_leaked,
@@ -536,6 +598,97 @@ class HintOrchestrationService:
         )
         return req, quota_view
 
+    def _fail_work(self, work: HintWorkItem, error_code: str) -> None:
+        completed_now = self.now_fn()
+        with self.session_factory.begin() as db:
+            req = db.execute(
+                select(HintRequest)
+                .where(HintRequest.id == work.request_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if (
+                req is not None
+                and req.status == "processing"
+                and req.claim_token == work.claim_token
+            ):
+                req.status = "failed"
+                req.error_code = error_code
+                req.claim_token = None
+                req.completed_at = completed_now
+
+    def process_request(
+        self, request_id: int
+    ) -> tuple[HintRequest, QuotaStatusView] | None:
+        work = self._claim_work(request_id)
+        if work is None:
+            with self.session_factory() as db:
+                req = db.get(HintRequest, request_id)
+                if req is None:
+                    return None
+                quota_view = self.get_quota_status(
+                    db, student_id=req.student_id, problem_id=req.problem_id
+                )
+                db.expunge(req)
+                return req, quota_view
+        try:
+            core_result = generate_and_validate_hint_core(
+                work.context,
+                work.level,
+                self.adapter,
+                max_retries=self.settings.hint_max_retries,
+                reference_code=work.reference_code,
+                token_overlap_threshold=self.settings.guardrail_token_overlap_threshold,
+                temperature=self.settings.llm_temperature,
+                timeout_seconds=self.settings.llm_timeout_seconds,
+                max_tokens=self.settings.llm_max_tokens,
+            )
+        except Exception:
+            logger.exception("hint_worker_unhandled_error request_id=%s", request_id)
+            self._fail_work(work, "llm_worker_error")
+            return self.process_request(request_id)
+        return self._finish_work(work, core_result)
+
+    def process_next(self) -> bool:
+        work = self._claim_work()
+        if work is None:
+            return False
+        try:
+            core_result = generate_and_validate_hint_core(
+                work.context,
+                work.level,
+                self.adapter,
+                max_retries=self.settings.hint_max_retries,
+                reference_code=work.reference_code,
+                token_overlap_threshold=self.settings.guardrail_token_overlap_threshold,
+                temperature=self.settings.llm_temperature,
+                timeout_seconds=self.settings.llm_timeout_seconds,
+                max_tokens=self.settings.llm_max_tokens,
+            )
+            self._finish_work(work, core_result)
+        except Exception:
+            logger.exception("hint_worker_unhandled_error request_id=%s", work.request_id)
+            self._fail_work(work, "llm_worker_error")
+        return True
+
+    def request_hint(
+        self,
+        *,
+        student_id: int,
+        submission_id: int,
+        grading_run_id: int,
+        request_key: str,
+    ) -> tuple[HintRequest, QuotaStatusView]:
+        req, quota_view = self.enqueue_hint(
+            student_id=student_id,
+            submission_id=submission_id,
+            grading_run_id=grading_run_id,
+            request_key=request_key,
+        )
+        if req.status != "processing":
+            return req, quota_view
+        processed = self.process_request(req.id)
+        return processed or (req, quota_view)
+
     def get_hint_request(
         self,
         db: Session,
@@ -544,22 +697,23 @@ class HintOrchestrationService:
         request_id: int,
     ) -> tuple[HintRequest, QuotaStatusView] | None:
         now = self.now_fn()
-        req = db.scalar(
-            select(HintRequest).where(
+        req = db.execute(
+            select(HintRequest)
+            .where(
                 HintRequest.id == request_id,
                 HintRequest.student_id == student_id,
             )
-        )
+            .with_for_update()
+        ).scalar_one_or_none()
         if req is None:
             return None
+        self._expire_request_if_needed(req, now=now)
+        db.flush()
         quota_view = self.get_quota_status(
             db, student_id=student_id, problem_id=req.problem_id
         )
+        db.commit()
         db.expunge(req)
-        if req.status == "processing" and req.expires_at <= now:
-            req.status = "failed"
-            req.error_code = "request_expired"
-            req.completed_at = now
         return req, quota_view
 
     def list_problem_hints(

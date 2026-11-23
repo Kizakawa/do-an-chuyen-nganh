@@ -14,7 +14,8 @@ def db_session() -> Session:
         yield session
     finally:
         session.close()
-        transaction.rollback()
+        if transaction.is_active:
+            transaction.rollback()
         connection.close()
 
 
@@ -24,7 +25,7 @@ def clean_database() -> None:
     with SessionLocal.begin() as session:
         session.execute(
             text(
-                "TRUNCATE TABLE hint_request, help_quota, test_result, grading_run, "
+                "TRUNCATE TABLE worker_heartbeat, hint_request, help_quota, test_result, grading_run, "
                 "submission, test_case, problem, student RESTART IDENTITY CASCADE"
             )
         )

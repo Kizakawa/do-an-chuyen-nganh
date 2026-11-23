@@ -146,3 +146,15 @@ class HintRequestResponse(BaseModel):
 class ProblemHintsResponse(BaseModel):
     quota: QuotaStatusResponse
     hints: list[HistoryHintItem]
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    login_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class CurrentStudentResponse(BaseModel):
+    id: int
+    login_name: str

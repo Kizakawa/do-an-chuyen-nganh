@@ -1,7 +1,7 @@
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 
 PYODIDE_CDN_BASE = "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/"
@@ -9,15 +9,16 @@ SANDBOX_HTML_PATH = "/static/pyodide-sandbox.html"
 
 
 class SecurityHeadersMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, settings: Settings | None = None) -> None:
         self.app = app
+        self.settings = settings
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        settings = get_settings()
+        settings = self.settings or get_settings()
         path = str(scope.get("path", ""))
 
         async def send_with_headers(message: Message) -> None:

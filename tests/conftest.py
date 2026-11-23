@@ -5,7 +5,18 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import SessionLocal, engine
+from app.rate_limit import ACCOUNT_LOGIN_LIMITER
+
+
+@pytest.fixture(autouse=True)
+def reset_cached_security_state():
+    get_settings.cache_clear()
+    ACCOUNT_LOGIN_LIMITER.reset()
+    yield
+    get_settings.cache_clear()
+    ACCOUNT_LOGIN_LIMITER.reset()
 
 
 @lru_cache(maxsize=1)

@@ -49,7 +49,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         TrustedHostMiddleware,
         allowed_hosts=current_settings.trusted_host_list,
     )
-    application.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware, settings=app_settings)
     application.add_middleware(RequestLoggingMiddleware)
     application.include_router(auth_router)
     application.include_router(problems_router)
@@ -65,13 +65,13 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     @application.get("/health", tags=["system"])
     def health() -> dict[str, str]:
         """Liveness: tiến trình API vẫn phục vụ request."""
-        active_settings = get_settings()
+        active_settings = app_settings or get_settings()
         return {"status": "ok", "service": active_settings.app_name}
 
     @application.get("/health/ready", tags=["system"])
     def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
         """Readiness: API truy vấn được PostgreSQL ứng dụng."""
-        active_settings = get_settings()
+        active_settings = app_settings or get_settings()
         try:
             db.execute(text("SELECT 1"))
         except SQLAlchemyError as exc:
@@ -107,4 +107,4 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
 
 
 settings = get_settings()
-app = create_app(settings)
+app = create_app()

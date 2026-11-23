@@ -207,4 +207,5 @@ def test_submit_enforces_pending_limit_and_history_pagination(
         assert len(page2) == 1
         assert page1[0]["submission_id"] != page2[0]["submission_id"]
     finally:
+        monkeypatch.undo()
         get_settings.cache_clear()

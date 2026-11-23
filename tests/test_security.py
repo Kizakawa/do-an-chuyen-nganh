@@ -131,6 +131,7 @@ def test_session_login_and_csrf_protection(clean_database: None, monkeypatch) ->
             assert logged_out.status_code == 204
             assert client.get("/api/problems").status_code == 401
     finally:
+        monkeypatch.undo()
         get_settings.cache_clear()
 
 
@@ -217,6 +218,7 @@ def test_demo_and_session_web_auth_redirects_without_db(monkeypatch) -> None:
         assert redirect_err.value.headers is not None
         assert redirect_err.value.headers["Location"] == "/login"
     finally:
+        monkeypatch.undo()
         get_settings.cache_clear()
 
 
@@ -313,6 +315,7 @@ def test_security_headers_cache_hsts_csp_and_production_docs(monkeypatch) -> Non
             assert sandbox_resp.headers["x-frame-options"] == "SAMEORIGIN"
             assert "sandbox allow-scripts" in sandbox_resp.headers["content-security-policy"]
     finally:
+        monkeypatch.undo()
         get_settings.cache_clear()
 
     prod_settings = Settings(

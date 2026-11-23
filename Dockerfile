@@ -11,7 +11,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.lock pyproject.toml ./
+COPY requirements.lock pyproject.toml README.md ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.lock
 

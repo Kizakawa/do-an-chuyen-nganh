@@ -295,7 +295,6 @@ def test_harness_blocks_json_encoder_patch_atexit_and_fake_importlib_open() -> N
             "RuntimeError",
         ),
         (
-            "import compileall\n"
             "def sum_numbers(numbers):\n"
             "    code = compile(\"open('pyproject.toml', 'r').read()\", '<frozen importlib._bootstrap_external>', 'exec')\n"
             "    exec(code)\n"
@@ -309,8 +308,10 @@ def test_harness_blocks_json_encoder_patch_atexit_and_fake_importlib_open() -> N
             "RuntimeError",
         ),
         (
-            "import posix\n"
+            "import os, sys\n"
             "def sum_numbers(numbers):\n"
+            "    low = sys.modules[os.name]\n"
+            "    low.write(1, b'x')\n"
             "    return 0\n",
             "RuntimeError",
         ),
